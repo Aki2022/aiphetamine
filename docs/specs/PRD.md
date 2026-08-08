@@ -182,7 +182,7 @@ AIphetamine起動時に、以下を実行する。
 
 1. `candidates`、`rate_limits`、`logs`ディレクトリを作成する。存在する場合は再利用する。
 2. 各ディレクトリの所有者、権限、symlinkでないことを検証する。
-3. `rate_limits`ディレクトリ内の既存rate limitイベントと`.processing`ファイルを削除する。
+3. `rate_limits`ディレクトリ内の12時間以内の有効なrate limitイベントは保持し、古い・不正なイベントと`.processing`ファイルを削除する。
 4. 既存の候補発見イベントを候補一覧へ取り込む。
 5. メモリ上の監視対象session_id集合と有効化期限を空にする。
 6. メニューバーUIを表示する。取り込んだ候補はチェックOFFとする。
@@ -612,7 +612,8 @@ Quit AIphetamine
 Given rate_limitsディレクトリに既存のrate limitイベントがある
 And candidatesディレクトリに既存の候補発見記録がある
 When AIphetamineを起動する
-Then 既存のrate limitイベントと`.processing`は削除される
+Then 12時間以内の有効なrate limitイベントは保持される
+And 古い・不正なrate limitイベントと`.processing`は削除される
 And 候補発見イベントは候補一覧へ取り込まれる
 And チェック状態は空になる
 And 起動直後にresumeは実行されない

@@ -240,6 +240,7 @@ class RateLimitEvent:
     project_path: Path
     updated_at: datetime
     source_file: Path | None = None
+    account_name: str | None = None
 ```
 
 不変オブジェクトとする。
@@ -257,6 +258,7 @@ class CandidateSession:
     session_name: str | None = None
     project_name: str | None = None
     source_file: Path | None = None
+    account_name: str | None = None
 ```
 
 候補スナップショットを表す不変オブジェクトとする。有効化状態や期限は含めない。
@@ -282,6 +284,7 @@ class ResumeRequest:
     session_id: str
     project_path: Path
     message: str = "Continue"
+    account_name: str | None = None
 ```
 
 ## 7.4 ResumeLaunchResult
@@ -294,14 +297,7 @@ class ResumeLaunchResult:
     error: str | None
 ```
 
-MVPの成功判定はプロセス生成成功である。
-
-将来、検証結果により次を追加できる。
-
-```python
-exit_code: int | None
-rate_limited_again: bool | None
-```
+MVPの成功判定は、標準出力・標準エラーを取得せずに回収した終了コードが0であることである。`launched`はこの正常完了を表す。非ゼロ終了または起動エラーは`launched=False`とサニタイズ済み分類で返す。
 
 stdout/stderrは取得・保存しないため、結果モデルへ追加しない。
 
@@ -331,7 +327,7 @@ JSONは「rate limitに到達した」という単発イベントである。
 候補発見記録とrate limitイベントは、寿命と操作が異なるため用途別ディレクトリへ分離する。
 
 - `candidates/`: session_idごとの最新候補記録。起動時に読み込むが、有効化状態や期限は保存しない
-- `rate_limits/`: rate limit到達を表す単発イベント。claim、complete、restore、起動時cleanupの対象
+- `rate_limits/`: rate limit到達を表す単発イベント。claim、complete、restore、起動時の鮮度付きcleanupの対象
 
 候補発見記録を有効化状態のDBとして扱わない。
 
@@ -372,9 +368,12 @@ JSONは「rate limitに到達した」という単発イベントである。
   "reason": "rate_limit",
   "session_id": "550e8400-e29b-41d4-a716-446655440000",
   "project_path": "<absolute-project-path>",
-  "updated_at": "2026-07-20T01:42:15+09:00"
+  "updated_at": "2026-07-20T01:42:15+09:00",
+  "account_name": "main"
 }
 ```
+
+`account_name`はHook設定で明示された場合だけ保存する任意項目であり、認証情報やメールアドレスではない。
 
 ## 8.4 バリデーション
 
@@ -388,6 +387,7 @@ JSONは「rate limitに到達した」という単発イベントである。
 - `updated_at`がISO 8601として解釈可能
 - ファイル名がsession_idから再計算したsession_keyと一致する
 - `updated_at`が現在UTCより未来でも5分以内である
+- `account_name`が存在する場合は設定済みのアカウント識別子である
 
 rate limitイベント追加条件:
 
@@ -406,7 +406,7 @@ resume前追加条件:
 
 ## 9.1 責務
 
-Claude Code Hookは、候補セッションの最新スナップショットとrate limit到達イベントをJSONへ変換する。セッション終了Hookは対応する候補記録を削除する。
+Claude Code Hookは、候補セッションの最新スナップショットとrate limit到達イベントをJSONへ変換する。セッション終了Hookは対応するrate limitイベントがない場合だけ候補記録を削除し、制限到達後のresume選択に必要な候補を保持する。
 
 AIphetamine本体はClaudeの出力を直接監視しない。
 
@@ -468,7 +468,7 @@ Hook失敗はClaude Code本体を妨げない。
 - Hook側で再試行しない
 - AIphetamineが起動していなくても候補記録の作成・更新・削除とrate limitイベント作成を行える
 - 候補記録の削除失敗を含むHookエラーはClaude Code本体を妨げない
-- 次回AIphetamine起動時に既存rate limitイベントは削除され、候補記録は読み込まれる
+- 次回AIphetamine起動時、12時間以内の有効なrate limitイベントは保持され、古い・不正なイベントだけが削除される。候補記録は読み込まれる
 
 ## 9.6 Hook設定の適用境界
 
@@ -563,7 +563,8 @@ abc.processing
 
 起動時に`rate_limits/`だけを対象として:
 
-- `*.json`削除
+- 12時間以内の有効な`*.json`は保持
+- 古い・不正な`*.json`削除
 - `*.processing`削除
 - `*.tmp.*`削除
 
@@ -704,7 +705,7 @@ def run_poll_cycle() -> None:
 
 - セッションごとにsubprocessを起動
 - 起動処理自体は順次行う
-- 起動後の完了は巡回処理内で待たない
+- 起動後の完了はUIスレッドでは待たず、巡回ワーカーで終了コードを待つ
 - claim、restore、complete、候補同期、期限切れ処理を同じワーカー上で直列化する
 - 前回巡回が実行中の場合は新しい巡回を開始せず、重複スキップをログへ記録して次の未来境界を予約する
 
@@ -714,13 +715,12 @@ MVPでは以下を必須とする。
 
 - stdin、stdout、stderrを`subprocess.DEVNULL`へ接続する
 - `start_new_session=True`でアプリ本体から独立させる
-- `Popen`後は軽量なreaperへプロセスハンドルを渡し、巡回処理を待たせない
-- reaperは`wait()`で終了を回収し、出力内容は取得しない
+- `Popen`後は同じ巡回ワーカーで`wait()`し、終了コードだけを回収する
 - アプリ終了時にresume子プロセスを強制終了しない
 
 ## 13.2 子プロセス終了メタデータ
 
-reaperは終了コードだけを回収できるが、MVPのresume成功判定は`Popen`によるプロセス生成成功のままとする。終了コードは保証判定や再試行判定に使用せず、記録する場合も匿名化した相関IDとサニタイズ済み分類に限る。
+終了コード0の場合だけ対象イベントを完了にし、非ゼロ終了ではイベントを復元する。標準出力・標準エラー、終了コードの数値、会話内容は保存しない。記録する場合も匿名化した相関IDとサニタイズ済み分類に限る。
 
 ## 14. ClaudeResumeExecutor
 
@@ -747,6 +747,8 @@ cwd=str(project_path)
 環境変数:
 
 - 基本は現在の環境を継承
+- `ResumeRequest.account_name`が`alias`の場合は検証済みの第二設定ディレクトリを`CLAUDE_CONFIG_DIR`へ設定する
+- アカウント名が不明または候補とイベントで不一致の場合はresumeを起動しない
 - Claude実行にはinstallスクリプトが保存した検証済み絶対パスを使い、実行時PATH探索は行わない
 
 ## 14.1 Claude実行ファイル探索
@@ -1010,7 +1012,7 @@ Popen(["claude", "-p", "--resume", id, "Continue"])
     │      ▼
     │   restore .json
     │
-    └── launch succeeded
+    └── process exits with code 0
            ▼
         delete .processing
            ▼
@@ -1058,9 +1060,7 @@ resume起動失敗後、restoreしようとした時点でHookが同名JSONを�
 
 `.processing`が残る。
 
-次回起動時に`rate_limits/`をcleanupするため、古いrate limitイベントは再実行しない。`candidates/`はcleanupせず、24時間鮮度期限を満たす候補だけを読み込む。
-
-これは「起動時リセット」要件と一致する。
+次回起動時、12時間以内の有効なrate limitイベントは保持されるが、選択状態は空なので自動resumeは行われない。`candidates/`はcleanupせず、24時間鮮度期限を満たす候補だけを読み込む。
 
 ## 22.3 JSON途中書き込み
 
@@ -1146,8 +1146,8 @@ JSONは残し、ログへ記録する。
 - 未選択は実行しない
 - 選択済みだけ実行
 - 複数セッション
-- launch成功でdelete
-- launch失敗でrestore
+- 終了コード0でdelete
+- 非ゼロ終了または起動失敗でrestore
 - 1件失敗しても他を継続
 
 ## 23.2 Integration Tests
@@ -1217,4 +1217,4 @@ JSONは残し、ログへ記録する。
 
 - activeな`PRD.md`で、候補発見・終了イベント、12時間の有効期限、2時間巡回への統合、安全なログ制約が追加された。
 - 候補発見・終了イベント、12時間の有効期限、2時間巡回への統合、安全なログ制約を本architectureへ反映中である。
-- 現時点で実装コード、guide、active workstreamは存在しない。
+- Phase 1のrepository、selection、boundary、resume eligibility基盤、runtime coreのatomic event操作・poll cycle・固定resume command契約、およびread-only dry-run app shellがactive workstreamで実装済みである。メニューバーUI、LaunchAgent、実Claude subprocess実行、production Hook適用、自然なrate limit再Hookは未実装・未検証である。

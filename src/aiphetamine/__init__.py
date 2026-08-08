@@ -1,0 +1,1 @@
+"""AIphetamine application package."""
