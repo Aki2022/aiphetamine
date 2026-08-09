@@ -35,9 +35,15 @@ def _owner_is_trusted(st: os.stat_result, *, allow_root_owner: bool = True) -> b
 
 
 def _directory_is_trusted(
-    st: os.stat_result, *, leaf: bool, allow_root_owner: bool = True
+    st: os.stat_result,
+    *,
+    leaf: bool,
+    allow_root_owner: bool = True,
+    require_owner_only: bool = False,
 ) -> bool:
     if not stat.S_ISDIR(st.st_mode) or not _owner_is_trusted(st, allow_root_owner=allow_root_owner):
+        return False
+    if leaf and require_owner_only and stat.S_IMODE(st.st_mode) & 0o077:
         return False
     writable = bool(st.st_mode & 0o022)
     if not writable:
@@ -52,7 +58,9 @@ def _directory_open_flags() -> int:
     return flags | getattr(os, "O_CLOEXEC", 0)
 
 
-def _open_trusted_directory(path: Path, *, leaf_owner_current: bool = True) -> int:
+def _open_trusted_directory(
+    path: Path, *, leaf_owner_current: bool = True, require_owner_only: bool = False
+) -> int:
     """Open every directory component with O_NOFOLLOW and validate its owner."""
 
     absolute = _absolute(path)
@@ -77,6 +85,7 @@ def _open_trusted_directory(path: Path, *, leaf_owner_current: bool = True) -> i
                 child_stat,
                 leaf=is_leaf,
                 allow_root_owner=not (is_leaf and leaf_owner_current),
+                require_owner_only=require_owner_only,
             ):
                 raise OSError("unsafe_directory")
         return fd
@@ -126,18 +135,28 @@ def is_secure_account_directory(path: Path) -> bool:
     """Return whether an existing account root is private and non-symlinked."""
 
     try:
-        fd = _open_trusted_directory(_absolute(path), leaf_owner_current=True)
+        fd = _open_trusted_directory(
+            _absolute(path), leaf_owner_current=True, require_owner_only=True
+        )
     except OSError:
         return False
     try:
         st = os.fstat(fd)
-        return stat.S_IMODE(st.st_mode) & 0o022 == 0
+        return stat.S_IMODE(st.st_mode) & 0o077 == 0
     finally:
         os.close(fd)
 
 
 def open_private_directory(path: Path) -> int:
     """Open an owner-controlled directory without following any component."""
+
+    return _open_trusted_directory(
+        _absolute(path), leaf_owner_current=True, require_owner_only=True
+    )
+
+
+def open_trusted_directory(path: Path) -> int:
+    """Open a trusted directory whose leaf may be publicly readable."""
 
     return _open_trusted_directory(_absolute(path), leaf_owner_current=True)
 
@@ -187,8 +206,13 @@ def read_private_text(path: Path) -> str:
         file_stat = os.fstat(descriptor)
         if not stat.S_ISREG(file_stat.st_mode) or not _owner_is_trusted(
             file_stat, allow_root_owner=False
-        ) or stat.S_IMODE(file_stat.st_mode) & 0o022:
+        ):
             raise OSError("unsafe_file")
+        if stat.S_IMODE(file_stat.st_mode) & 0o077:
+            os.fchmod(descriptor, 0o600)
+            file_stat = os.fstat(descriptor)
+        if stat.S_IMODE(file_stat.st_mode) != 0o600:
+            raise OSError("unsafe_file_permissions")
         with os.fdopen(descriptor, "r", encoding="utf-8") as stream:
             descriptor = -1
             return stream.read()

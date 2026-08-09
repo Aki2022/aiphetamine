@@ -39,6 +39,8 @@ class ResumeRequest:
     project_path: Path
     message: str = "Continue"
     account_name: str | None = None
+    expected_project_device: int | None = None
+    expected_project_inode: int | None = None
 
 
 @dataclass(frozen=True)

@@ -285,6 +285,8 @@ class ResumeRequest:
     project_path: Path
     message: str = "Continue"
     account_name: str | None = None
+    expected_project_device: int | None = None
+    expected_project_inode: int | None = None
 ```
 
 ## 7.4 ResumeLaunchResult
@@ -549,7 +551,7 @@ renameに失敗した場合、他処理がclaim済みとみなしスキップす
 
 ### 10.2.2 Complete
 
-プロセス生成成功時:
+resumeプロセスが終了コード0で完了した時:
 
 ```text
 abc.processing
@@ -558,7 +560,7 @@ abc.processing
 
 ### 10.2.3 Restore
 
-プロセス生成失敗時:
+起動失敗または非ゼロ終了時:
 
 ```text
 abc.processing
@@ -593,16 +595,16 @@ abc.processing
 
 ```python
 class InMemorySelectionStore:
-    _activations: dict[str, SessionActivation]
+    _activations: dict[tuple[str, str | None], SessionActivation]
 ```
 
 操作:
 
 ```python
-activate(session_id, now_utc)
-deactivate(session_id)
-is_selected(session_id)
-is_expired(session_id, now_utc)
+activate(session_id, account_name, now_utc)
+deactivate(session_id, account_name)
+is_selected(session_id, account_name)
+is_expired(session_id, account_name, now_utc)
 expire_due(now_utc)
 clear()
 ```
@@ -613,7 +615,7 @@ rate limitイベントが削除されてもSessionActivationは保持する。
 
 理由:
 
-- resume後、まだrate limit中なら同じsession_idのJSONが再生成される
+- resume後、まだrate limit中なら同じ`(session_id, account_name)`のJSONが再生成される
 - 再生成時にチェックONを維持する必要がある
 
 アプリ終了時に破棄する。巡回前とスリープ復帰時に、現在UTCで期限切れを判定し、resume判定より先に対象をOFFへ戻す。タイムゾーン変更では期限を再計算しない。システム時計が変更された場合は、変更後のUTC時刻で再評価する。
@@ -726,9 +728,11 @@ def run_poll_cycle() -> None:
 
 MVPでは以下を必須とする。
 
-- stdin、stdout、stderrを`subprocess.DEVNULL`へ接続する
-- `start_new_session=True`でアプリ本体から独立させる
-- `Popen`後は同じ巡回ワーカーで`wait()`し、終了コードだけを回収する
+- stdin、stdout、stderrを`/dev/null`へ接続する
+- macOSでは`posix_spawn`のsetsid属性でアプリ本体から独立させる
+- macOSではdescriptor-relativeなcwd変更を使い、実行ファイル・project・accountのpathnameと検証済みdescriptorのdevice/inodeが一致しない場合は起動しない
+- その他の環境では`Popen(start_new_session=True)`を使い、同じ検証境界を適用する
+- 起動後は同じ巡回ワーカーでwaitし、終了コード0だけを成功として回収する
 - アプリ終了時にresume子プロセスを強制終了しない
 
 ## 13.2 子プロセス終了メタデータ
@@ -998,7 +1002,7 @@ Menu shows unchecked session
 User checks session
     │
     ▼
-SelectionStore.add(session_id)
+SelectionStore.add((session_id, account_name))
 ```
 
 ## 20. Resumeシーケンス
@@ -1013,7 +1017,7 @@ ResumeService.poll()
 List valid events
     │
     ▼
-Filter selected session IDs
+Filter selected (session_id, account_name) pairs
     │
     ▼
 Rename .json → .processing
@@ -1055,7 +1059,7 @@ StopFailure(rate_limit) fires again
 Same session_id JSON recreated
         │
         ▼
-SelectionStore still contains session_id
+SelectionStore still contains (session_id, account_name)
         │
         ▼
 UI shows checked session again

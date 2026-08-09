@@ -55,8 +55,8 @@ python3 scripts/run_dry_cycle.py
 ```
 
 The dry-run command reads local AIphetamine state and prints only sanitized
-counts. It does not launch Claude, modify settings, or persist selection state;
-it may create or update the local operational log directory.
+counts. It does not launch Claude, modify settings, create runtime directories,
+write logs, or persist selection state.
 
 ## Hook setup
 

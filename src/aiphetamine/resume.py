@@ -85,5 +85,7 @@ def evaluate_resume(
             session_id=event.session_id,
             project_path=resolved,
             account_name=event.account_name,
+            expected_project_device=activation.project_device,
+            expected_project_inode=activation.project_inode,
         ),
     )

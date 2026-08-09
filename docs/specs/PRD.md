@@ -140,7 +140,7 @@ JSONファイルは「このセッションがrate limitに到達した」とい
 - 同一session_idのJSON再生成時にチェック状態を維持
 - 1回の有効化につき12時間の有効期限
 - 12時間経過時の自動OFF
-- 起動時の既存JSON削除
+- 起動時に新しい正当なrate limit JSONを保持し、期限切れ・不正・processing・一時JSONだけを削除
 - Dockアイコン非表示
 - Launch at LoginのON/OFF
 - 7日分のログ保存
@@ -424,7 +424,7 @@ ON/OFFのメニュー操作は設定生成の状態だけを扱う。LaunchAgent
 - スケジューラを停止
 - 実行中のresumeプロセスは強制終了しない
 - JSONは終了時には削除しない
-- 次回起動時に既存JSONを削除する
+- 次回起動時も12時間以内の正当なrate limit JSONを保持し、期限切れ・不正・processing・一時JSONだけを削除する
 
 ## 9. JSON仕様
 
@@ -649,12 +649,12 @@ And セッションが選択されている
 When 固定巡回時刻になる
 Then JSONは`.processing`へrenameされる
 And `claude -p --resume SESSION_ID "Continue"`がproject_pathで起動される
-And MVPの成功判定はresumeプロセスの生成成功である
+And resumeプロセスが終了コード0を返す
 
 ### AC-06 起動成功時にJSON削除
 
-Given resumeプロセスが生成できる
-When subprocess起動が成功する
+Given resumeプロセスが終了コード0を返す
+When subprocessが完了する
 Then `.processing`は削除される
 And `(session_id, account_name)`の選択状態はメモリに残る
 
@@ -810,7 +810,7 @@ claude -p --resume "<session_id>" "Continue"
 4. StopFailure(rate_limit) Hookが再度発火する
 5. 同一session_idのJSONが再生成される
 
-この仮説が成立すれば、出力解析や終了コード判定は不要である。
+これは検証対象の仮説であり、未検証のまま受け入れ条件にはしない。現行実装は標準出力を保存せず、resumeプロセスの終了コード0を成功として扱う。
 
 ### Spike 4: フォールバック判断
 

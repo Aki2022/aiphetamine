@@ -11,7 +11,11 @@ import sys
 from typing import Callable, Mapping
 
 from .domain import ResumeLaunchResult, ResumeRequest
-from .filesystem_security import open_private_directory, open_verified_executable
+from .filesystem_security import (
+    open_private_directory,
+    open_trusted_directory,
+    open_verified_executable,
+)
 
 
 @dataclass(frozen=True)
@@ -19,6 +23,8 @@ class ResumeCommandSpec:
     args: tuple[str, ...]
     cwd: Path
     environment: Mapping[str, str] | None = None
+    expected_cwd_device: int | None = None
+    expected_cwd_inode: int | None = None
 
     @property
     def shell(self) -> bool:
@@ -57,6 +63,21 @@ def _ctypes_function(library, name: str, *, restype, argtypes):
     function.restype = restype
     function.argtypes = argtypes
     return function
+
+
+def _assert_path_matches_descriptor(path: Path, descriptor: int, *, label: str) -> None:
+    """Fail closed when the pathname no longer names the validated object."""
+
+    try:
+        path_stat = os.stat(path, follow_symlinks=False)
+        descriptor_stat = os.fstat(descriptor)
+    except OSError as error:
+        raise OSError(f"unsafe_{label}") from error
+    if (path_stat.st_dev, path_stat.st_ino) != (
+        descriptor_stat.st_dev,
+        descriptor_stat.st_ino,
+    ):
+        raise OSError(f"unsafe_{label}")
 
 
 def _launch_macos_process(spec: ResumeCommandSpec) -> _PosixSpawnProcess:
@@ -99,7 +120,7 @@ def _launch_macos_process(spec: ResumeCommandSpec) -> _PosixSpawnProcess:
         ],
     )
 
-    executable_fd = open_verified_executable(Path(spec.args[0]))
+    executable_fd = -1
     cwd_fd = -1
     config_fd = -1
     null_fd = -1
@@ -108,7 +129,14 @@ def _launch_macos_process(spec: ResumeCommandSpec) -> _PosixSpawnProcess:
     actions_initialized = False
     attributes_initialized = False
     try:
-        cwd_fd = open_private_directory(spec.cwd)
+        executable_fd = open_verified_executable(Path(spec.args[0]))
+        cwd_fd = open_trusted_directory(spec.cwd)
+        if spec.expected_cwd_device is not None or spec.expected_cwd_inode is not None:
+            if (spec.expected_cwd_device, spec.expected_cwd_inode) != (
+                os.fstat(cwd_fd).st_dev,
+                os.fstat(cwd_fd).st_ino,
+            ):
+                raise OSError("unsafe_project_directory")
         environment = dict(spec.environment) if spec.environment is not None else dict(os.environ)
         if spec.environment is not None:
             config_dir = environment.get("CLAUDE_CONFIG_DIR")
@@ -120,6 +148,15 @@ def _launch_macos_process(spec: ResumeCommandSpec) -> _PosixSpawnProcess:
             # open through spawn for validation, while passing its validated
             # absolute path to Claude for normal directory traversal.
             environment["CLAUDE_CONFIG_DIR"] = str(config_dir)
+
+        _assert_path_matches_descriptor(Path(spec.args[0]), executable_fd, label="executable")
+        _assert_path_matches_descriptor(spec.cwd, cwd_fd, label="project_directory")
+        if config_fd >= 0:
+            _assert_path_matches_descriptor(
+                Path(environment["CLAUDE_CONFIG_DIR"]),
+                config_fd,
+                label="account_directory",
+            )
 
         null_fd = os.open(
             "/dev/null",
@@ -194,6 +231,8 @@ def build_resume_spec(
         args=(executable, "-p", "--resume", request.session_id, request.message),
         cwd=request.project_path,
         environment=environment,
+        expected_cwd_device=request.expected_project_device,
+        expected_cwd_inode=request.expected_project_inode,
     )
 
 
@@ -227,8 +266,29 @@ class ClaudeResumeExecutor:
             raise OSError("unsafe_executable")
         if sys.platform == "darwin":
             return _launch_macos_process(spec)
-        executable_fd = open_verified_executable(Path(spec.args[0]))
+        executable_fd = -1
+        cwd_fd = open_trusted_directory(spec.cwd)
+        config_fd = -1
         try:
+            executable_fd = open_verified_executable(Path(spec.args[0]))
+            if spec.expected_cwd_device is not None or spec.expected_cwd_inode is not None:
+                if (spec.expected_cwd_device, spec.expected_cwd_inode) != (
+                    os.fstat(cwd_fd).st_dev,
+                    os.fstat(cwd_fd).st_ino,
+                ):
+                    raise OSError("unsafe_project_directory")
+            _assert_path_matches_descriptor(
+                Path(spec.args[0]), executable_fd, label="executable"
+            )
+            _assert_path_matches_descriptor(spec.cwd, cwd_fd, label="project_directory")
+            if spec.environment is not None:
+                config_dir = spec.environment.get("CLAUDE_CONFIG_DIR")
+                if config_dir is None:
+                    raise OSError("unsafe_account_directory")
+                config_fd = open_private_directory(Path(config_dir))
+                _assert_path_matches_descriptor(
+                    Path(config_dir), config_fd, label="account_directory"
+                )
             return subprocess.Popen(
                 spec.args,
                 cwd=spec.cwd,
@@ -240,7 +300,11 @@ class ClaudeResumeExecutor:
                 env=dict(spec.environment) if spec.environment is not None else None,
             )
         finally:
-            os.close(executable_fd)
+            if config_fd >= 0:
+                os.close(config_fd)
+            os.close(cwd_fd)
+            if executable_fd >= 0:
+                os.close(executable_fd)
 
 
 class AccountRoutedResumeExecutor:

@@ -121,9 +121,13 @@ def _custom_title_at(directory_fd: int, filename: str) -> str | None:
         if (
             not stat.S_ISREG(file_stat.st_mode)
             or file_stat.st_uid != current_uid
-            or stat.S_IMODE(file_stat.st_mode) & 0o022
         ):
             raise OSError("unsafe_transcript")
+        if stat.S_IMODE(file_stat.st_mode) & 0o077:
+            os.fchmod(descriptor, 0o600)
+            file_stat = os.fstat(descriptor)
+        if stat.S_IMODE(file_stat.st_mode) != 0o600:
+            raise OSError("unsafe_transcript_permissions")
         with os.fdopen(descriptor, encoding="utf-8") as stream:
             descriptor = -1
             for line in stream:

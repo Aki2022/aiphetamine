@@ -150,6 +150,26 @@ class SecurityBoundaryTests(unittest.TestCase):
 
         self.assertFalse(is_secure_account_directory(Path("/")))
 
+    def test_private_directory_rejects_group_readable_account_directory(self):
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as temp_dir:
+            account = Path(temp_dir) / "account"
+            account.mkdir(mode=0o755)
+            account.chmod(0o755)
+
+            with self.assertRaises(OSError):
+                open_private_directory(account)
+            self.assertFalse(is_secure_account_directory(account))
+
+    def test_private_text_rejects_group_readable_file(self):
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as temp_dir:
+            root = Path(temp_dir)
+            private_file = root / "private.json"
+            private_file.write_text("{}", encoding="utf-8")
+            private_file.chmod(0o644)
+
+            self.assertEqual(read_private_text(private_file), "{}")
+            self.assertEqual(private_file.stat().st_mode & 0o777, 0o600)
+
     def test_executable_boundary_rejects_group_writable_file(self):
         with tempfile.TemporaryDirectory(dir="/private/tmp") as temp_dir:
             root = Path(temp_dir)

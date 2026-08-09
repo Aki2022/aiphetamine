@@ -29,7 +29,7 @@ When a rate-limit event exists without a candidate snapshot, the runtime reconst
 
 ## Configuration Boundary
 
-The executable path is accepted only from an owner-controlled JSON configuration file when it is an absolute, regular, executable, non-symlink file and every ancestor directory is a trusted, non-writable boundary. The configured path points to the verified managed Claude executable. The account directory and executable are revalidated immediately before a real launch; if either becomes invalid, the runtime disables that launch without disabling the menu.
+The executable path is accepted only from an owner-controlled JSON configuration file when it is an absolute, regular, executable, non-symlink file and every ancestor directory is a trusted, non-writable boundary. The configured path points to the verified managed Claude executable. Immediately before a real launch, the runtime opens the project directory, account directory, and executable with no-follow descriptors, compares each pathname to the descriptor identity, and fails closed on any mismatch. The project descriptor is also compared with the device/inode captured when the user selected the session. If a boundary cannot be proven stable, the runtime disables that launch without disabling the menu.
 
 ## Verification
 

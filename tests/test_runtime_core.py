@@ -1,7 +1,9 @@
 import json
+import os
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from datetime import datetime, timezone
 from pathlib import Path
 SOURCE_ROOT = Path(__file__).resolve().parents[1] / "src"
@@ -9,6 +11,7 @@ sys.path.insert(0, str(SOURCE_ROOT))
 
 from aiphetamine.domain import session_key
 from aiphetamine.domain import CandidateSession
+from aiphetamine import executor as executor_module
 from aiphetamine.domain import ResumeRequest, ResumeLaunchResult
 from aiphetamine.executor import (
     AccountRoutedResumeExecutor,
@@ -84,6 +87,60 @@ class RuntimeCoreTests(unittest.TestCase):
             self.assertEqual(process.wait(), 0)
             self.assertEqual((root / "child-cwd").read_text().strip(), str(root))
             self.assertTrue((config / "config-seen").exists())
+
+    @unittest.skipUnless(sys.platform == "darwin", "requires macOS native spawn")
+    def test_macos_launch_fails_closed_when_executable_changes_after_validation(self):
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as temp_dir:
+            root = Path(temp_dir)
+            executable = root / "claude"
+            executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            executable.chmod(0o700)
+            replacement = root / "replacement"
+            spec = build_resume_spec(executable, ResumeRequest("safe", root))
+            real_open = executor_module.open_verified_executable
+
+            def swap_after_validation(path):
+                descriptor = real_open(path)
+                replacement.write_text("#!/bin/sh\nexit 91\n", encoding="utf-8")
+                replacement.chmod(0o700)
+                os.replace(replacement, executable)
+                return descriptor
+
+            with mock.patch.object(
+                executor_module, "open_verified_executable", swap_after_validation
+            ):
+                with self.assertRaises(OSError):
+                    ClaudeResumeExecutor._launch_process(spec)
+
+    @unittest.skipUnless(sys.platform == "darwin", "requires macOS native spawn")
+    def test_macos_launch_fails_closed_when_account_directory_changes_after_validation(self):
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as temp_dir:
+            root = Path(temp_dir)
+            executable = root / "claude"
+            executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            executable.chmod(0o700)
+            config = root / "config"
+            config.mkdir(mode=0o700)
+            original_config = root / "original-config"
+            spec = build_resume_spec(
+                executable,
+                ResumeRequest("safe", root),
+                config_dir=config,
+            )
+            real_open = executor_module.open_private_directory
+
+            def swap_after_validation(path):
+                descriptor = real_open(path)
+                if Path(path) == config:
+                    os.replace(config, original_config)
+                    config.mkdir(mode=0o700)
+                return descriptor
+
+            with mock.patch.object(
+                executor_module, "open_private_directory", swap_after_validation
+            ):
+                with self.assertRaises(OSError):
+                    ClaudeResumeExecutor._launch_process(spec)
 
     def test_account_routed_executor_sets_the_selected_config_directory(self):
         calls = []
