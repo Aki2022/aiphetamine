@@ -81,12 +81,15 @@ class ClaudeResumeExecutor:
             raise OSError("fd_exec_unavailable")
         executable_fd = -1
         config_fd = -1
+        cwd_fd = -1
         try:
             executable_fd = open_verified_executable(Path(spec.args[0]))
             args = list(spec.args)
             args[0] = f"/dev/fd/{executable_fd}"
+            cwd_fd = open_private_directory(spec.cwd)
+            cwd_path = f"/dev/fd/{cwd_fd}"
             environment = dict(spec.environment) if spec.environment is not None else None
-            pass_fds = [executable_fd]
+            pass_fds = [executable_fd, cwd_fd]
             if environment is not None:
                 config_dir = environment.get("CLAUDE_CONFIG_DIR")
                 if config_dir is None:
@@ -98,7 +101,7 @@ class ClaudeResumeExecutor:
                 os.set_inheritable(descriptor, True)
             return subprocess.Popen(
                 args,
-                cwd=str(spec.cwd),
+                cwd=cwd_path,
                 shell=False,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
@@ -110,6 +113,8 @@ class ClaudeResumeExecutor:
         finally:
             if config_fd >= 0:
                 os.close(config_fd)
+            if cwd_fd >= 0:
+                os.close(cwd_fd)
             if executable_fd >= 0:
                 os.close(executable_fd)
 
@@ -142,7 +147,7 @@ class AccountRoutedResumeExecutor:
 
 
 class DisabledResumeExecutor:
-    """Safe runtime boundary used until a separate live-launch approval exists."""
+    """Safe fallback used when validated resume configuration is unavailable."""
 
     def launch(self, request: ResumeRequest) -> ResumeLaunchResult:
         del request

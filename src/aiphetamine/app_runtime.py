@@ -96,10 +96,20 @@ class ApplicationRuntime:
         return snapshot
 
     def candidates(self, now: datetime):
-        candidates = CandidateRepository(self.candidates_root).list_candidates(now=now)
+        candidate_repository = CandidateRepository(self.candidates_root)
+        candidates = candidate_repository.list_candidates(now=now)
         known_session_ids = {candidate.session_id for candidate in candidates}
-        for event in RateLimitEventRepository(self.rate_limits_root).list_events(now=now):
-            if event.session_id in known_session_ids:
+        event_repository = RateLimitEventRepository(self.rate_limits_root)
+        events = event_repository.list_events(now=now)
+        ambiguous_session_ids = (
+            candidate_repository.ambiguous_session_ids
+            | event_repository.ambiguous_session_ids
+        )
+        for event in events:
+            if (
+                event.session_id in known_session_ids
+                or event.session_id in ambiguous_session_ids
+            ):
                 continue
             candidates.append(
                 CandidateSession(

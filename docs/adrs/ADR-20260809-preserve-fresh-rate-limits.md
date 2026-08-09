@@ -1,6 +1,6 @@
 ---
 id: ADR-20260809-preserve-fresh-rate-limits
-status: proposed
+status: accepted
 scope: development
 created_at: 2026-08-09
 updated_at: 2026-08-09
@@ -41,7 +41,7 @@ During startup, preserve valid rate-limit JSON that is within the repository's 1
 ### Negative or Follow-up
 
 - Startup may display events created while AIphetamine was offline; the 12-hour freshness bound limits this exposure.
-- The resident executor remains disabled until the live-launch gate is accepted.
+- The account-routed resident executor is implemented, but live operational verification remains behind the explicit selection and human gate.
 
 ## Links
 

@@ -110,9 +110,20 @@ def _custom_title_at(directory_fd: int, filename: str) -> str | None:
     try:
         descriptor = os.open(
             filename,
-            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
+            os.O_RDONLY
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_NONBLOCK", 0)
+            | getattr(os, "O_CLOEXEC", 0),
             dir_fd=directory_fd,
         )
+        file_stat = os.fstat(descriptor)
+        current_uid = getattr(os, "geteuid", os.getuid)()
+        if (
+            not stat.S_ISREG(file_stat.st_mode)
+            or file_stat.st_uid != current_uid
+            or stat.S_IMODE(file_stat.st_mode) & 0o022
+        ):
+            raise OSError("unsafe_transcript")
         with os.fdopen(descriptor, encoding="utf-8") as stream:
             descriptor = -1
             for line in stream:

@@ -203,6 +203,7 @@ def open_verified_executable(path: Path) -> int:
         if not (
             stat.S_ISREG(file_stat.st_mode)
             and _owner_is_trusted(file_stat, allow_root_owner=True)
+            and not stat.S_IMODE(file_stat.st_mode) & 0o022
             and bool(file_stat.st_mode & 0o111)
         ):
             os.close(descriptor)

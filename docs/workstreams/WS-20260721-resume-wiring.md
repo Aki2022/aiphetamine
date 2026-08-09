@@ -37,7 +37,7 @@ Wire the existing local eligibility and resume contracts into the running menu-b
 
 - Menu rows can toggle in-memory activation and Quit works.
 - One-shot AppKit scheduling invokes the local poll service through an injected resume boundary.
-- A validated configured Claude executable is available to the account-routed resume adapter; live launch remains limited to the separately gated verification issue.
+- A validated configured Claude executable is available to the account-routed resume adapter; the implementation is complete, while live operational launch remains limited to the separately gated verification issue.
 
 ## Authorization Envelope
 
@@ -241,7 +241,7 @@ Record only decisions that are difficult to reverse or surprising without contex
 - `python3 -m compileall -q src hooks scripts`, `git diff --check`, and the repository docs validator pass.
 - The runtime configuration is owner-only and its configured executable passes the read-only validator.
 - The LaunchAgent remains running after its one permitted restart.
-- The account-routed executor is live and the 02:00 JST boundary produced sanitized local evidence; the UI-result confirmation remains pending until the resident process is restarted with the status display.
+- The account-routed executor is implemented and the 02:00 JST boundary produced sanitized local evidence; the remaining UI-result confirmation is an operational human check, not an implementation gap.
 - Account-scoped artifacts, duplicate-session ambiguity, malformed account metadata, shell assignment words, and descriptor-relative filesystem operations are covered by local tests.
 
 ## Completion

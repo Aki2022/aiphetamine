@@ -143,6 +143,15 @@ class SecurityBoundaryTests(unittest.TestCase):
             self.assertFalse(is_secure_account_directory(account))
             self.assertFalse(validate_external_executable(executable))
 
+    def test_executable_boundary_rejects_group_writable_file(self):
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as temp_dir:
+            root = Path(temp_dir)
+            executable = root / "claude"
+            executable.write_text("#!/bin/sh\n")
+            executable.chmod(0o770)
+
+            self.assertFalse(validate_external_executable(executable))
+
     def test_shell_paths_are_single_quoted_arguments(self):
         lifecycle_root = Path("/private/tmp/lifecycle; touch /tmp/not-created")
         lifecycle_script = Path("/private/tmp/capture script.py")
@@ -305,6 +314,65 @@ class SecurityBoundaryTests(unittest.TestCase):
             os.mkfifo(path, 0o600)
             with self.assertRaises(OSError):
                 read_private_text(path)
+
+    def test_duplicate_candidate_does_not_reconstruct_from_rate_limit_event(self):
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as temp_dir:
+            root = Path(temp_dir)
+            candidates = root / "candidates"
+            events = root / "rate_limits"
+            for account in ("main", "alias"):
+                (candidates / account).mkdir(parents=True)
+                (events / account).mkdir(parents=True)
+            now = datetime(2026, 7, 21, 12, tzinfo=UTC)
+            session_id = "duplicate-reconstruct"
+            for account in ("main", "alias"):
+                candidate = {
+                    "schema_version": 1,
+                    "record_type": "candidate",
+                    "session_id": session_id,
+                    "project_path": str(root),
+                    "updated_at": "2026-07-21T11:59:00+00:00",
+                    "account_name": account,
+                }
+                (candidates / account / f"{session_key(session_id)}.json").write_text(
+                    json.dumps(candidate)
+                )
+            event = {
+                "schema_version": 1,
+                "record_type": "rate_limit",
+                "reason": "rate_limit",
+                "session_id": session_id,
+                "project_path": str(root),
+                "updated_at": "2026-07-21T11:59:00+00:00",
+                "account_name": "main",
+            }
+            (events / "main" / f"{session_key(session_id)}.json").write_text(json.dumps(event))
+
+            self.assertEqual(ApplicationRuntime(root).candidates(now), ())
+
+    def test_duplicate_rate_limit_event_does_not_reconstruct_candidate(self):
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as temp_dir:
+            root = Path(temp_dir)
+            events = root / "rate_limits"
+            for account in ("main", "alias"):
+                (events / account).mkdir(parents=True)
+            now = datetime(2026, 7, 21, 12, tzinfo=UTC)
+            session_id = "duplicate-event-reconstruct"
+            for account in ("main", "alias"):
+                event = {
+                    "schema_version": 1,
+                    "record_type": "rate_limit",
+                    "reason": "rate_limit",
+                    "session_id": session_id,
+                    "project_path": str(root),
+                    "updated_at": "2026-07-21T11:59:00+00:00",
+                    "account_name": account,
+                }
+                (events / account / f"{session_key(session_id)}.json").write_text(
+                    json.dumps(event)
+                )
+
+            self.assertEqual(ApplicationRuntime(root).candidates(now), ())
 
 
 if __name__ == "__main__":

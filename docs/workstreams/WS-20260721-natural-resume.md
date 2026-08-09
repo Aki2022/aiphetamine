@@ -160,5 +160,5 @@ The bounded live result is recorded and all local gates pass; the workstream is 
 
 Record only decisions that are difficult to reverse or surprising without context.
 
-- This one-shot verification used the approved direct poll path at the fixed boundary. The resident menu-bar application's normal scheduler remains wired to `DisabledResumeExecutor` until a separate enablement decision.
+- This one-shot verification used the approved direct poll path at the fixed boundary. The resident menu-bar application's normal scheduler is wired to the account-routed executor when its owner-only configuration is valid; live operational verification remains behind a separate enablement decision.
 - The one-shot result is accepted based on subsequent operator confirmation, not a retained Claude exit result.

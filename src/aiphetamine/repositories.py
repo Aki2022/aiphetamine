@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import stat
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Generic, TypeVar
@@ -52,6 +54,7 @@ class _Repository(Generic[T]):
 
     def __init__(self, root: Path):
         self.root = root
+        self.ambiguous_session_ids: set[str] = set()
 
     def _files(self) -> list[Path]:
         if not self.root.is_dir() or self.root.is_symlink():
@@ -93,8 +96,7 @@ class _Repository(Generic[T]):
             return _INVALID_ACCOUNT
         return scope
 
-    @staticmethod
-    def _deduplicate(records: list[T]) -> list[T]:
+    def _deduplicate(self, records: list[T]) -> list[T]:
         unique: dict[str, T] = {}
         ambiguous: set[str] = set()
         for record in records:
@@ -108,6 +110,7 @@ class _Repository(Generic[T]):
                 unique.pop(session_id, None)
                 continue
             unique[session_id] = record
+        self.ambiguous_session_ids = ambiguous
         return [unique[key] for key in sorted(unique)]
 
 
@@ -115,6 +118,7 @@ class CandidateRepository(_Repository[CandidateSession]):
     def list_candidates(
         self, *, now: datetime, max_age: timedelta = timedelta(hours=24)
     ) -> list[CandidateSession]:
+        self.ambiguous_session_ids = set()
         records: list[CandidateSession] = []
         for path in self._files():
             payload = _read_json(path)
@@ -164,6 +168,7 @@ class RateLimitEventRepository(_Repository[RateLimitEvent]):
     def list_events(
         self, *, now: datetime, max_age: timedelta = timedelta(hours=12)
     ) -> list[RateLimitEvent]:
+        self.ambiguous_session_ids = set()
         records: list[RateLimitEvent] = []
         for path in self._files():
             payload = _read_json(path)
@@ -207,7 +212,16 @@ class RateLimitEventRepository(_Repository[RateLimitEvent]):
         if not self._is_artifact(processing_path, ".processing"):
             return None
         restored = processing_path.with_suffix(".json")
-        if restored.exists():
+        try:
+            destination_stat = os.stat(restored, follow_symlinks=False)
+        except FileNotFoundError:
+            destination_stat = None
+        if destination_stat is not None and (
+            not stat.S_ISREG(destination_stat.st_mode)
+            or destination_stat.st_uid != getattr(os, "geteuid", os.getuid)()
+        ):
+            return None
+        if destination_stat is not None:
             self.complete(processing_path)
             return restored
         try:

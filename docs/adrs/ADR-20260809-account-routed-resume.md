@@ -1,6 +1,6 @@
 ---
 id: ADR-20260809-account-routed-resume
-status: proposed
+status: accepted
 scope: development
 created_at: 2026-08-09
 updated_at: 2026-08-09
@@ -24,7 +24,7 @@ Two Claude Code configurations are used on one Mac. A session identifier alone d
 
 ## Decision
 
-Carry an optional allowlisted account label (`main` or `alias`) from the Hook record through the resume request. The live executor must set the matching `CLAUDE_CONFIG_DIR`; it refuses an unknown account or a conflict between the event and candidate labels. The resident scheduler remains disabled until the separate live-launch gate is accepted.
+Carry an optional allowlisted account label (`main` or `alias`) from the Hook record through the resume request. The live executor must set the matching `CLAUDE_CONFIG_DIR`; it refuses an unknown account or a conflict between the event and candidate labels. The resident scheduler is wired to construct this executor when the owner-only configuration is valid, while actual live launches remain behind the separately recorded human verification gate.
 
 ## Alternatives Considered
 
@@ -42,7 +42,7 @@ Carry an optional allowlisted account label (`main` or `alias`) from the Hook re
 ### Negative or Follow-up
 
 - Existing unlabeled rate-limit files require session-store matching or a new natural Hook event before they can prove second-account ownership.
-- Enabling the resident executor still requires a separate human approval and live verification.
+- The implementation is available behind explicit selection and owner-only configuration; live operational verification remains a separate human gate.
 
 ## Links
 
