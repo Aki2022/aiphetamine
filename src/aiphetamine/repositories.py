@@ -10,7 +10,12 @@ from pathlib import Path
 from typing import Any, Generic, TypeVar
 
 from .domain import CandidateSession, RateLimitEvent, session_key
-from .filesystem_security import read_private_text, secure_replace, secure_unlink
+from .filesystem_security import (
+    open_private_directory,
+    read_private_text,
+    secure_replace,
+    secure_unlink,
+)
 
 
 UTC = timezone.utc
@@ -56,9 +61,22 @@ class _Repository(Generic[T]):
         self.root = root
         self.repair_permissions = repair_permissions
         self.ambiguous_session_ids: set[str] = set()
+        self.ambiguous_source_files: set[Path] = set()
+
+    @staticmethod
+    def _close_directory(fd: int) -> None:
+        os.close(fd)
+
+    def _root_is_private(self) -> bool:
+        try:
+            root_fd = open_private_directory(self.root)
+        except OSError:
+            return False
+        self._close_directory(root_fd)
+        return True
 
     def _files(self) -> list[Path]:
-        if not self.root.is_dir() or self.root.is_symlink():
+        if not self._root_is_private():
             return []
         files: list[Path] = []
         try:
@@ -68,6 +86,11 @@ class _Repository(Generic[T]):
                 if path.is_file() and path.suffix == ".json":
                     files.append(path)
                 elif path.is_dir() and path.name in _ACCOUNT_SCOPES:
+                    try:
+                        scope_fd = open_private_directory(path)
+                    except OSError:
+                        continue
+                    os.close(scope_fd)
                     for scoped in path.iterdir():
                         if not scoped.is_symlink() and scoped.is_file() and scoped.suffix == ".json":
                             files.append(scoped)
@@ -100,18 +123,27 @@ class _Repository(Generic[T]):
     def _deduplicate(self, records: list[T]) -> list[T]:
         unique: dict[str, T] = {}
         ambiguous: set[str] = set()
+        ambiguous_sources: set[Path] = set()
         for record in records:
             session_id = record.session_id  # type: ignore[attr-defined]
             if session_id in ambiguous:
+                source_file = getattr(record, "source_file", None)
+                if source_file is not None:
+                    ambiguous_sources.add(source_file)
                 continue
             if session_id in unique:
                 # Never let two account scopes or two conflicting files choose
                 # an arbitrary winner for the same Claude session.
                 ambiguous.add(session_id)
-                unique.pop(session_id, None)
+                previous = unique.pop(session_id, None)
+                for candidate in (previous, record):
+                    source_file = getattr(candidate, "source_file", None)
+                    if source_file is not None:
+                        ambiguous_sources.add(source_file)
                 continue
             unique[session_id] = record
         self.ambiguous_session_ids = ambiguous
+        self.ambiguous_source_files = ambiguous_sources
         return [unique[key] for key in sorted(unique)]
 
 
@@ -120,6 +152,7 @@ class CandidateRepository(_Repository[CandidateSession]):
         self, *, now: datetime, max_age: timedelta = timedelta(hours=24)
     ) -> list[CandidateSession]:
         self.ambiguous_session_ids = set()
+        self.ambiguous_source_files = set()
         records: list[CandidateSession] = []
         for path in self._files():
             payload = _read_json(path, repair_permissions=self.repair_permissions)
@@ -170,6 +203,7 @@ class RateLimitEventRepository(_Repository[RateLimitEvent]):
         self, *, now: datetime, max_age: timedelta = timedelta(hours=12)
     ) -> list[RateLimitEvent]:
         self.ambiguous_session_ids = set()
+        self.ambiguous_source_files = set()
         records: list[RateLimitEvent] = []
         for path in self._files():
             payload = _read_json(path, repair_permissions=self.repair_permissions)
@@ -239,20 +273,27 @@ class RateLimitEventRepository(_Repository[RateLimitEvent]):
     ) -> int:
         if self.root.is_symlink() or not self.root.is_dir():
             return 0
+        if not self._root_is_private():
+            return 0
         preserved: set[Path] = set()
         if preserve_fresh and now is not None:
-            preserved = {
+            fresh_events = self.list_events(now=now)
+            preserved = set(self.ambiguous_source_files)
+            preserved.update(
                 event.source_file
-                for event in self.list_events(now=now)
+                for event in fresh_events
                 if event.source_file is not None
-            }
+            )
         removed = 0
         directories = [self.root]
         try:
             directories.extend(
                 path
                 for path in self.root.iterdir()
-                if path.is_dir() and not path.is_symlink() and path.name in _ACCOUNT_SCOPES
+                if path.is_dir()
+                and not path.is_symlink()
+                and path.name in _ACCOUNT_SCOPES
+                and self._private_scope(path)
             )
         except OSError:
             return 0
@@ -280,6 +321,7 @@ class RateLimitEventRepository(_Repository[RateLimitEvent]):
             or not self.root.is_dir()
             or self.root.is_symlink()
             or path.suffix != suffix
+            or not self._root_is_private()
         ):
             return False
         if path.parent == self.root:
@@ -288,7 +330,17 @@ class RateLimitEventRepository(_Repository[RateLimitEvent]):
             path.parent.parent == self.root
             and path.parent.name in _ACCOUNT_SCOPES
             and not path.parent.is_symlink()
+            and self._private_scope(path.parent)
         )
+
+    @staticmethod
+    def _private_scope(path: Path) -> bool:
+        try:
+            directory_fd = open_private_directory(path)
+        except OSError:
+            return False
+        os.close(directory_fd)
+        return True
 
     def _parse(
         self, path: Path, payload: dict[str, Any], now: datetime, max_age: timedelta

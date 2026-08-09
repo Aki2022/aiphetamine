@@ -211,10 +211,10 @@ class Phase1FoundationTests(unittest.TestCase):
             root = Path(temp_dir)
             candidates_dir = root / "candidates"
             events_dir = root / "rate_limits"
-            candidates_dir.mkdir()
-            events_dir.mkdir()
-            (candidates_dir / "main").mkdir()
-            (events_dir / "main").mkdir()
+            candidates_dir.mkdir(mode=0o700)
+            events_dir.mkdir(mode=0o700)
+            (candidates_dir / "main").mkdir(mode=0o700)
+            (events_dir / "main").mkdir(mode=0o700)
             now = datetime(2026, 7, 21, 12, tzinfo=UTC)
             candidate = {
                 "schema_version": 1,

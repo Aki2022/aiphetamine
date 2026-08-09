@@ -68,8 +68,8 @@ class RuntimeLoggingTests(unittest.TestCase):
             runtime = ApplicationRuntime(root, log_salt=b"test-salt")
             runtime.startup(now)
             session_id = "session-private-value"
-            (root / "candidates" / "main").mkdir()
-            (root / "rate_limits" / "main").mkdir()
+            (root / "candidates" / "main").mkdir(mode=0o700)
+            (root / "rate_limits" / "main").mkdir(mode=0o700)
             candidate = {
                 "schema_version": 1,
                 "record_type": "candidate",

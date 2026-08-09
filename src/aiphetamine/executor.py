@@ -64,6 +64,88 @@ class _PosixSpawnProcess:
                 continue
 
 
+_CHILD_BOUNDARY_CHECK = r'''
+import os
+import sys
+
+config_path = sys.argv[1]
+config_device = int(sys.argv[2])
+config_inode = int(sys.argv[3])
+project_path = sys.argv[4]
+project_device = int(sys.argv[5])
+project_inode = int(sys.argv[6])
+claude_path = sys.argv[7]
+
+def same_path(path, device, inode):
+    stat_result = os.stat(path, follow_symlinks=False)
+    return (stat_result.st_dev, stat_result.st_ino) == (device, inode)
+
+try:
+    if os.environ.get("CLAUDE_CONFIG_DIR") != config_path:
+        raise OSError("unsafe_account_directory")
+    if not same_path(config_path, config_device, config_inode):
+        raise OSError("unsafe_account_directory")
+    if not same_path(project_path, project_device, project_inode):
+        raise OSError("unsafe_project_directory")
+    current_directory = os.open(
+        ".", os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    )
+    try:
+        current_stat = os.fstat(current_directory)
+        if (current_stat.st_dev, current_stat.st_ino) != (project_device, project_inode):
+            raise OSError("unsafe_project_directory")
+    finally:
+        os.close(current_directory)
+    os.execve(claude_path, sys.argv[7:], os.environ)
+except BaseException:
+    os._exit(125)
+'''
+
+
+def _copy_executable_snapshot(source_fd: int, target: Path) -> None:
+    """Copy the already-open executable into a private, read-only staging file."""
+
+    duplicate_fd = os.dup(source_fd)
+    snapshot_fd = -1
+    try:
+        before = os.fstat(duplicate_fd)
+        os.lseek(duplicate_fd, 0, os.SEEK_SET)
+        with os.fdopen(duplicate_fd, "rb") as source:
+            duplicate_fd = -1
+            payload = source.read()
+            after = os.fstat(source.fileno())
+        if (
+            before.st_size,
+            before.st_mtime_ns,
+            before.st_ctime_ns,
+        ) != (
+            after.st_size,
+            after.st_mtime_ns,
+            after.st_ctime_ns,
+        ):
+            raise OSError("executable_changed_during_snapshot")
+        snapshot_fd = os.open(
+            target,
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_CLOEXEC", 0),
+            0o700,
+        )
+        with os.fdopen(snapshot_fd, "wb") as snapshot:
+            snapshot_fd = -1
+            snapshot.write(payload)
+            snapshot.flush()
+            os.fsync(snapshot.fileno())
+        os.chmod(target, 0o500, follow_symlinks=False)
+    finally:
+        if duplicate_fd >= 0:
+            os.close(duplicate_fd)
+        if snapshot_fd >= 0:
+            os.close(snapshot_fd)
+
+
 def _ctypes_function(library, name: str, *, restype, argtypes):
     function = getattr(library, name)
     function.restype = restype
@@ -167,19 +249,42 @@ def _launch_macos_process(spec: ResumeCommandSpec) -> _PosixSpawnProcess:
                 label="account_directory",
             )
 
-        # Execute a private hardlink to the validated executable. This removes
-        # the original pathname from the exec lookup after the final check;
-        # the original path is still checked again after spawn so an update or
-        # replacement fails closed instead of silently continuing.
+        # Execute a private read-only snapshot. A hardlink would still observe
+        # in-place mutations of the source executable.
         staging_dir = Path(
             tempfile.mkdtemp(prefix=".aiphetamine-exec-", dir="/private/tmp")
         )
         staged_executable = staging_dir / "claude"
-        os.link(Path(spec.args[0]), staged_executable, follow_symlinks=False)
-        _assert_path_matches_descriptor(
-            staged_executable, executable_fd, label="executable"
-        )
+        _copy_executable_snapshot(executable_fd, staged_executable)
+        staged_fd = open_verified_executable(staged_executable)
+        try:
+            _assert_path_matches_descriptor(
+                staged_executable, staged_fd, label="staged_executable"
+            )
+        finally:
+            os.close(staged_fd)
+
+        launch_path = staged_executable
         launch_args = (str(staged_executable), *spec.args[1:])
+        if config_fd >= 0:
+            config_stat = os.fstat(config_fd)
+            project_stat = os.fstat(cwd_fd)
+            launch_path = Path(sys.executable)
+            launch_args = (
+                str(launch_path),
+                "-I",
+                "-S",
+                "-c",
+                _CHILD_BOUNDARY_CHECK,
+                str(environment["CLAUDE_CONFIG_DIR"]),
+                str(config_stat.st_dev),
+                str(config_stat.st_ino),
+                str(spec.cwd),
+                str(project_stat.st_dev),
+                str(project_stat.st_ino),
+                str(staged_executable),
+                *spec.args[1:],
+            )
 
         null_fd = os.open(
             "/dev/null",
@@ -220,7 +325,7 @@ def _launch_macos_process(spec: ResumeCommandSpec) -> _PosixSpawnProcess:
         pid = ctypes.c_int()
         result = spawn(
             ctypes.byref(pid),
-            os.fsencode(str(staged_executable)),
+            os.fsencode(str(launch_path)),
             ctypes.byref(actions),
             ctypes.byref(attributes),
             argv,
@@ -245,6 +350,9 @@ def _launch_macos_process(spec: ResumeCommandSpec) -> _PosixSpawnProcess:
         try:
             _assert_path_matches_descriptor(
                 Path(spec.args[0]), executable_fd, label="executable"
+            )
+            _assert_path_matches_descriptor(
+                spec.cwd, cwd_fd, label="project_directory"
             )
             if config_fd >= 0:
                 _assert_path_matches_descriptor(

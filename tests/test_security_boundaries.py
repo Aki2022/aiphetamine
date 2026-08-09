@@ -81,10 +81,10 @@ class SecurityBoundaryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(dir="/private/tmp") as temp_dir:
             root = Path(temp_dir)
             candidates = root / "candidates"
-            candidates.mkdir()
-            (candidates / "unknown").mkdir()
+            candidates.mkdir(mode=0o700)
+            (candidates / "unknown").mkdir(mode=0o700)
             rate_limits = root / "rate_limits"
-            rate_limits.mkdir()
+            rate_limits.mkdir(mode=0o700)
             outside = root / "outside.json"
             outside.write_text("keep")
             key = session_key("safe-session")
@@ -170,6 +170,34 @@ class SecurityBoundaryTests(unittest.TestCase):
             self.assertEqual(read_private_text(private_file), "{}")
             self.assertEqual(private_file.stat().st_mode & 0o777, 0o600)
 
+    def test_repository_rejects_owner_readable_but_not_private_root(self):
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as temp_dir:
+            root = Path(temp_dir) / "candidates"
+            root.mkdir(mode=0o755)
+            root.chmod(0o755)
+            candidate_id = "loose-directory"
+            record = root / f"{session_key(candidate_id)}.json"
+            record.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "record_type": "candidate",
+                        "session_id": candidate_id,
+                        "project_path": str(root),
+                        "updated_at": "2026-07-21T11:59:00+00:00",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            record.chmod(0o600)
+
+            self.assertEqual(
+                CandidateRepository(root).list_candidates(
+                    now=datetime(2026, 7, 21, 12, tzinfo=UTC)
+                ),
+                [],
+            )
+
     def test_executable_boundary_rejects_group_writable_file(self):
         with tempfile.TemporaryDirectory(dir="/private/tmp") as temp_dir:
             root = Path(temp_dir)
@@ -219,8 +247,8 @@ class SecurityBoundaryTests(unittest.TestCase):
             root = Path(temp_dir)
             candidates = root / "candidates"
             rate_limits = root / "rate_limits"
-            candidates.mkdir()
-            rate_limits.mkdir()
+            candidates.mkdir(mode=0o700)
+            rate_limits.mkdir(mode=0o700)
             now = datetime(2026, 7, 21, 12, tzinfo=UTC)
             session_id = "safe-session"
             common = {
@@ -245,8 +273,8 @@ class SecurityBoundaryTests(unittest.TestCase):
             root = Path(temp_dir)
             candidates = root / "candidates" / "main"
             rate_limits = root / "rate_limits" / "main"
-            candidates.mkdir(parents=True)
-            rate_limits.mkdir(parents=True)
+            candidates.mkdir(mode=0o700, parents=True)
+            rate_limits.mkdir(mode=0o700, parents=True)
             now = datetime(2026, 7, 21, 12, tzinfo=UTC)
             session_id = "malformed-account"
             common = {
@@ -272,8 +300,8 @@ class SecurityBoundaryTests(unittest.TestCase):
             candidates_root = root / "candidates"
             rate_limits_root = root / "rate_limits"
             for account in ("main", "alias"):
-                (candidates_root / account).mkdir(parents=True)
-                (rate_limits_root / account).mkdir(parents=True)
+                (candidates_root / account).mkdir(mode=0o700, parents=True)
+                (rate_limits_root / account).mkdir(mode=0o700, parents=True)
             now = datetime(2026, 7, 21, 12, tzinfo=UTC)
             session_id = "duplicate-account-session"
             for account in ("main", "alias"):
@@ -348,8 +376,8 @@ class SecurityBoundaryTests(unittest.TestCase):
             candidates = root / "candidates"
             events = root / "rate_limits"
             for account in ("main", "alias"):
-                (candidates / account).mkdir(parents=True)
-                (events / account).mkdir(parents=True)
+                (candidates / account).mkdir(mode=0o700, parents=True)
+                (events / account).mkdir(mode=0o700, parents=True)
             now = datetime(2026, 7, 21, 12, tzinfo=UTC)
             session_id = "duplicate-reconstruct"
             for account in ("main", "alias"):
@@ -382,7 +410,7 @@ class SecurityBoundaryTests(unittest.TestCase):
             root = Path(temp_dir)
             events = root / "rate_limits"
             for account in ("main", "alias"):
-                (events / account).mkdir(parents=True)
+                (events / account).mkdir(mode=0o700, parents=True)
             now = datetime(2026, 7, 21, 12, tzinfo=UTC)
             session_id = "duplicate-event-reconstruct"
             for account in ("main", "alias"):

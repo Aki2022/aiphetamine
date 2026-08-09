@@ -41,10 +41,10 @@ class AppShellTests(unittest.TestCase):
     def test_candidates_reconstruct_from_unmatched_rate_limit_event(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
-            (root / "candidates").mkdir()
+            (root / "candidates").mkdir(mode=0o700)
             rate_limits = root / "rate_limits"
-            rate_limits.mkdir()
-            (rate_limits / "alias").mkdir()
+            rate_limits.mkdir(mode=0o700)
+            (rate_limits / "alias").mkdir(mode=0o700)
             session_id = "session-alias-rate-limit"
             rate_limits.joinpath("alias", f"{session_key(session_id)}.json").write_text(
                 json.dumps(
@@ -74,8 +74,8 @@ class AppShellTests(unittest.TestCase):
             root = Path(temp_dir)
             candidates = root / "candidates"
             rate_limits = root / "rate_limits"
-            candidates.mkdir()
-            rate_limits.mkdir()
+            candidates.mkdir(mode=0o700)
+            rate_limits.mkdir(mode=0o700)
             candidate_id = "session-startup"
             candidate_path = candidates / f"{session_key(candidate_id)}.json"
             candidate_path.write_text(
@@ -105,9 +105,9 @@ class AppShellTests(unittest.TestCase):
     def test_startup_preserves_fresh_valid_rate_limit_events_for_selection(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
-            (root / "candidates").mkdir()
+            (root / "candidates").mkdir(mode=0o700)
             rate_limits = root / "rate_limits"
-            rate_limits.mkdir()
+            rate_limits.mkdir(mode=0o700)
             session_id = "session-preserve-on-restart"
             event_path = rate_limits / f"{session_key(session_id)}.json"
             event_path.write_text(
@@ -137,8 +137,8 @@ class AppShellTests(unittest.TestCase):
             root = Path(temp_dir)
             candidates = root / "candidates"
             rate_limits = root / "rate_limits"
-            candidates.mkdir()
-            rate_limits.mkdir()
+            candidates.mkdir(mode=0o700)
+            rate_limits.mkdir(mode=0o700)
             session_id = "session-dry-run"
             candidate = {
                 "schema_version": 1,

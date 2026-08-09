@@ -178,6 +178,64 @@ class RuntimeCoreTests(unittest.TestCase):
                 with self.assertRaises(OSError):
                     ClaudeResumeExecutor._launch_process(spec)
 
+    @unittest.skipUnless(sys.platform == "darwin", "requires macOS native spawn")
+    def test_macos_launch_uses_snapshot_when_source_is_mutated_in_place(self):
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as temp_dir:
+            root = Path(temp_dir)
+            executable = root / "claude"
+            executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            executable.chmod(0o700)
+            spec = build_resume_spec(executable, ResumeRequest("safe", root))
+            original_assert = executor_module._assert_path_matches_descriptor
+            mutated = False
+
+            def mutate_after_snapshot(path, descriptor, *, label):
+                nonlocal mutated
+                original_assert(path, descriptor, label=label)
+                if label == "staged_executable" and not mutated:
+                    executable.write_text("#!/bin/sh\nexit 91\n", encoding="utf-8")
+                    executable.chmod(0o700)
+                    mutated = True
+
+            with mock.patch.object(
+                executor_module,
+                "_assert_path_matches_descriptor",
+                mutate_after_snapshot,
+            ):
+                process = ClaudeResumeExecutor._launch_process(spec)
+
+            self.assertEqual(process.wait(), 0)
+
+    @unittest.skipUnless(sys.platform == "darwin", "requires macOS native spawn")
+    def test_macos_launch_rejects_project_replacement_after_identity_check(self):
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as temp_dir:
+            root = Path(temp_dir)
+            executable = root / "claude"
+            executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            executable.chmod(0o700)
+            project = root / "project"
+            project.mkdir(mode=0o700)
+            replacement = root / "replacement-project"
+            spec = build_resume_spec(
+                executable,
+                ResumeRequest("safe", project),
+            )
+            original_assert = executor_module._assert_path_matches_descriptor
+
+            def swap_after_project_check(path, descriptor, *, label):
+                original_assert(path, descriptor, label=label)
+                if label == "project_directory":
+                    os.replace(project, replacement)
+                    project.mkdir(mode=0o700)
+
+            with mock.patch.object(
+                executor_module,
+                "_assert_path_matches_descriptor",
+                swap_after_project_check,
+            ):
+                with self.assertRaises(OSError):
+                    ClaudeResumeExecutor._launch_process(spec)
+
     def test_account_routed_executor_sets_the_selected_config_directory(self):
         calls = []
 
@@ -285,6 +343,35 @@ class RuntimeCoreTests(unittest.TestCase):
             self.assertFalse(processing_path.exists())
             self.assertIn("12:00:00", event_path.read_text(encoding="utf-8"))
 
+    def test_startup_preserves_fresh_ambiguous_rate_limit_events(self):
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as temp_dir:
+            root = Path(temp_dir)
+            main = root / "main"
+            alias = root / "alias"
+            main.mkdir(mode=0o700)
+            alias.mkdir(mode=0o700)
+            now = datetime(2026, 7, 21, 12, tzinfo=UTC)
+            session_id = "duplicate-startup"
+            payload = {
+                "schema_version": 1,
+                "record_type": "rate_limit",
+                "reason": "rate_limit",
+                "session_id": session_id,
+                "project_path": str(root),
+                "updated_at": "2026-07-21T11:59:00+00:00",
+            }
+            main_path = main / f"{session_key(session_id)}.json"
+            alias_path = alias / f"{session_key(session_id)}.json"
+            main_path.write_text(json.dumps({**payload, "account_name": "main"}), encoding="utf-8")
+            alias_path.write_text(json.dumps({**payload, "account_name": "alias"}), encoding="utf-8")
+
+            repository = RateLimitEventRepository(root)
+            self.assertEqual(repository.list_events(now=now), [])
+            self.assertEqual(repository.ambiguous_session_ids, {session_id})
+            self.assertEqual(repository.cleanup_on_startup(now=now, preserve_fresh=True), 0)
+            self.assertTrue(main_path.exists())
+            self.assertTrue(alias_path.exists())
+
     def test_startup_cleanup_only_removes_rate_limit_artifacts(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -309,11 +396,11 @@ class RuntimeCoreTests(unittest.TestCase):
             root = Path(temp_dir)
             candidates_dir = root / "candidates"
             events_dir = root / "rate_limits"
-            candidates_dir.mkdir()
-            events_dir.mkdir()
-            (events_dir / "alias").mkdir()
-            (candidates_dir / "main").mkdir()
-            (events_dir / "main").mkdir()
+            candidates_dir.mkdir(mode=0o700)
+            events_dir.mkdir(mode=0o700)
+            (events_dir / "alias").mkdir(mode=0o700)
+            (candidates_dir / "main").mkdir(mode=0o700)
+            (events_dir / "main").mkdir(mode=0o700)
             now = datetime(2026, 7, 21, 12, tzinfo=UTC)
 
             def write_record(session_id, record_type, **extra):
@@ -370,9 +457,9 @@ class RuntimeCoreTests(unittest.TestCase):
             root = Path(temp_dir)
             candidates_dir = root / "candidates"
             events_dir = root / "rate_limits"
-            candidates_dir.mkdir()
-            events_dir.mkdir()
-            (events_dir / "alias").mkdir()
+            candidates_dir.mkdir(mode=0o700)
+            events_dir.mkdir(mode=0o700)
+            (events_dir / "alias").mkdir(mode=0o700)
             now = datetime(2026, 7, 21, 12, tzinfo=UTC)
             session_id = "session-provider-alias"
             event = {
@@ -417,10 +504,10 @@ class RuntimeCoreTests(unittest.TestCase):
             root = Path(temp_dir)
             candidates_dir = root / "candidates"
             events_dir = root / "rate_limits"
-            candidates_dir.mkdir()
-            events_dir.mkdir()
-            (candidates_dir / "main").mkdir()
-            (events_dir / "main").mkdir()
+            candidates_dir.mkdir(mode=0o700)
+            events_dir.mkdir(mode=0o700)
+            (candidates_dir / "main").mkdir(mode=0o700)
+            (events_dir / "main").mkdir(mode=0o700)
             now = datetime(2026, 7, 21, 12, tzinfo=UTC)
             session_id = "session-exception"
             payload = {
@@ -463,10 +550,10 @@ class RuntimeCoreTests(unittest.TestCase):
             root = Path(temp_dir)
             candidates_dir = root / "candidates"
             events_dir = root / "rate_limits"
-            candidates_dir.mkdir()
-            events_dir.mkdir()
-            (candidates_dir / "main").mkdir()
-            (events_dir / "main").mkdir()
+            candidates_dir.mkdir(mode=0o700)
+            events_dir.mkdir(mode=0o700)
+            (candidates_dir / "main").mkdir(mode=0o700)
+            (events_dir / "main").mkdir(mode=0o700)
             now = datetime(2026, 7, 21, 12, tzinfo=UTC)
             session_id = "session-recreated"
             payload = {
