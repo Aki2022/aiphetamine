@@ -34,10 +34,58 @@ class SessionMetadataTests(unittest.TestCase):
                 account_name="alias",
             )
 
-            enriched = SessionMetadataResolver((("main", root),)).enrich(candidate)
+            enriched = SessionMetadataResolver((("alias", root),)).enrich(candidate)
 
             self.assertEqual(enriched.account_name, "alias")
             self.assertEqual(enriched.session_name, "Alias session")
+
+    def test_duplicate_session_id_across_accounts_is_not_assigned(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            session_id = "duplicate-session"
+            account_roots = []
+            for label in ("main", "alias"):
+                account_root = root / label
+                projects = account_root / "projects"
+                projects.mkdir(parents=True)
+                (projects / f"{session_id}.jsonl").write_text(
+                    json.dumps({"customTitle": f"{label} session"}) + "\n", encoding="utf-8"
+                )
+                account_roots.append((label, account_root))
+
+            resolver = SessionMetadataResolver(tuple(account_roots))
+
+            self.assertEqual(resolver._session_label(session_id), (None, None))
+
+    def test_explicit_account_scopes_metadata_lookup(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            main_projects = root / "main" / "projects"
+            alias_projects = root / "alias" / "projects"
+            main_projects.mkdir(parents=True)
+            alias_projects.mkdir(parents=True)
+            session_id = "scoped-session"
+            (main_projects / f"{session_id}.jsonl").write_text(
+                json.dumps({"customTitle": "wrong account"}) + "\n", encoding="utf-8"
+            )
+            (alias_projects / f"{session_id}.jsonl").write_text(
+                json.dumps({"customTitle": "alias account"}) + "\n", encoding="utf-8"
+            )
+            candidate = CandidateSession(
+                1,
+                "candidate",
+                session_id,
+                root,
+                datetime(2026, 7, 21, 12, tzinfo=UTC),
+                account_name="alias",
+            )
+
+            enriched = SessionMetadataResolver(
+                (("main", root / "main"), ("alias", root / "alias"))
+            ).enrich(candidate)
+
+            self.assertEqual(enriched.account_name, "alias")
+            self.assertEqual(enriched.session_name, "alias account")
 
 
 if __name__ == "__main__":

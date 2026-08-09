@@ -53,11 +53,9 @@ def evaluate_resume(
     candidate = candidates.get(event.session_id)
     if candidate is None:
         return ResumeDecision("candidate_missing")
-    if (
-        event.account_name is not None
-        and candidate.account_name is not None
-        and event.account_name != candidate.account_name
-    ):
+    if event.account_name is None or candidate.account_name is None:
+        return ResumeDecision("account_unknown")
+    if event.account_name != candidate.account_name:
         return ResumeDecision("account_mismatch")
     if now_utc.astimezone(UTC) - candidate.updated_at > timedelta(hours=24):
         return ResumeDecision("candidate_stale")
@@ -84,6 +82,6 @@ def evaluate_resume(
         ResumeRequest(
             session_id=event.session_id,
             project_path=resolved,
-            account_name=event.account_name or candidate.account_name,
+            account_name=event.account_name,
         ),
     )

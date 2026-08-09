@@ -9,6 +9,7 @@ from threading import Lock
 from typing import Any
 
 from .domain import CandidateSession
+from .filesystem_security import ensure_private_directory
 from .repositories import CandidateRepository, RateLimitEventRepository
 from .resume_service import RuntimePollCycle
 from .runtime_logging import SanitizedLogger
@@ -63,6 +64,7 @@ class ApplicationRuntime:
         self.candidates_root = data_root / "candidates"
         self.rate_limits_root = data_root / "rate_limits"
         self.logs_root = data_root / "logs"
+        ensure_private_directory(self.data_root)
         self.selection_store = InMemorySelectionStore()
         self._logger = SanitizedLogger(self.logs_root, salt=log_salt)
         self._session_metadata = session_metadata
@@ -75,9 +77,9 @@ class ApplicationRuntime:
             return self._last_poll_status
 
     def startup(self, now: datetime) -> StartupSnapshot:
-        self.data_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        ensure_private_directory(self.data_root)
         for directory in (self.candidates_root, self.rate_limits_root, self.logs_root):
-            directory.mkdir(mode=0o700, exist_ok=True)
+            ensure_private_directory(directory)
         event_repository = RateLimitEventRepository(self.rate_limits_root)
         cleaned = event_repository.cleanup_on_startup(now=now, preserve_fresh=True)
         candidates = CandidateRepository(self.candidates_root).list_candidates(now=now)

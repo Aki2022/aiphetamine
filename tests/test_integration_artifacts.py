@@ -1,5 +1,6 @@
 import json
 import plistlib
+import shlex
 import sys
 import tempfile
 import unittest
@@ -46,6 +47,24 @@ class IntegrationArtifactTests(unittest.TestCase):
         command = fragment["hooks"]["SessionStart"][0]["hooks"][0]["command"]
 
         self.assertTrue(command.endswith("--account-name alias"))
+
+    def test_hook_fragment_normalizes_safe_argv_and_rejects_shell_syntax(self):
+        fragment = build_hook_settings_fragment('python3 "/safe path/aiphetamine hook.py"')
+        command = fragment["hooks"]["SessionStart"][0]["hooks"][0]["command"]
+        self.assertEqual(
+            shlex.split(command),
+            ["python3", "/safe path/aiphetamine hook.py", "--event", "SessionStart"],
+        )
+
+        for unsafe in (
+            "python3 /safe/hook.py; touch /tmp/marker",
+            "python3 /safe/hook.py && touch /tmp/marker",
+            "python3 /safe/hook.py $(touch /tmp/marker)",
+            "python3 /safe/hook.py `touch /tmp/marker`",
+            "PATH=/tmp/evil python3 /safe/hook.py",
+        ):
+            with self.subTest(unsafe=unsafe), self.assertRaisesRegex(ValueError, "invalid_hook_command"):
+                build_hook_settings_fragment(unsafe)
 
 
 if __name__ == "__main__":

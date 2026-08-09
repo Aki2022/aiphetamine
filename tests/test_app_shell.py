@@ -44,8 +44,9 @@ class AppShellTests(unittest.TestCase):
             (root / "candidates").mkdir()
             rate_limits = root / "rate_limits"
             rate_limits.mkdir()
+            (rate_limits / "alias").mkdir()
             session_id = "session-alias-rate-limit"
-            rate_limits.joinpath(f"{session_key(session_id)}.json").write_text(
+            rate_limits.joinpath("alias", f"{session_key(session_id)}.json").write_text(
                 json.dumps(
                     {
                         "schema_version": 1,

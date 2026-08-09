@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import os
 import plistlib
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+
+from .filesystem_security import atomic_write_bytes, ensure_private_directory, ensure_private_file
 
 
 LABEL = "local.aiphetamine.menubar"
@@ -46,20 +46,15 @@ class LaunchAgentManager:
             "KeepAlive": False,
         }
         encoded = plistlib.dumps(payload, fmt=plistlib.FMT_XML, sort_keys=True)
-        self._root.mkdir(mode=0o700, parents=True, exist_ok=True)
-        descriptor, temporary_name = tempfile.mkstemp(prefix=f".{PLIST_NAME}.", dir=self._root)
-        temporary = Path(temporary_name)
-        try:
-            with os.fdopen(descriptor, "wb") as stream:
-                stream.write(encoded)
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.chmod(temporary, 0o600)
-            os.replace(temporary, self.plist_path)
-        finally:
-            if temporary.exists():
-                temporary.unlink(missing_ok=True)
+        ensure_private_directory(self._root)
+        ensure_private_file(self.plist_path)
+        atomic_write_bytes(self.plist_path, encoded)
         return self.plist_path
 
     def is_generated(self) -> bool:
+        try:
+            ensure_private_directory(self._root)
+            ensure_private_file(self.plist_path)
+        except OSError:
+            return False
         return self.plist_path.is_file() and not self.plist_path.is_symlink()

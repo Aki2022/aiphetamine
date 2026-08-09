@@ -31,13 +31,13 @@ subagent_plan:
 
 ## Goal
 
-Wire the existing local eligibility and resume contracts into the running menu-bar application without launching Claude.
+Wire the existing local eligibility and resume contracts into the running menu-bar application while keeping every live launch behind an explicit selected, account-labeled session boundary.
 
 ## Success Criteria
 
 - Menu rows can toggle in-memory activation and Quit works.
-- One-shot AppKit scheduling invokes the local poll service through an injected, disabled-by-policy resume boundary.
-- A validated configured Claude executable is available to the resume adapter but is not launched in this workstream.
+- One-shot AppKit scheduling invokes the local poll service through an injected resume boundary.
+- A validated configured Claude executable is available to the account-routed resume adapter; live launch remains limited to the separately gated verification issue.
 
 ## Authorization Envelope
 
@@ -167,7 +167,7 @@ Enable the account-routed resume executor for sessions explicitly checked in the
 
 #### Current Status
 
-The operator approved live resume after confirming the menu rows. The executor and enriched candidate provider are implemented and unit-tested. The 02:00 JST boundary ran for the selected resident process and local diagnostics showed five rate-limit events completed while one older unmatched event remained. Because the menu previously exposed only selection state, the result was not visible to the operator; the menu now displays the latest poll boundary and aggregate statuses without private identifiers. The resident LaunchAgent was restarted with the operator's approval and is running the updated code; the remaining human check is to open the menu and confirm the summary, then reselect desired rows because selection is intentionally in memory only.
+The operator approved live resume after confirming the menu rows. The executor and enriched candidate provider are implemented and unit-tested. The 02:00 JST boundary ran for the selected resident process and local diagnostics showed five rate-limit events completed while one older unmatched event remained. Because the menu previously exposed only selection state, the result was not visible to the operator; the menu now displays the latest poll boundary and aggregate statuses without private identifiers. The resident LaunchAgent was restarted with the operator's approval and is running the updated code; the remaining human check is to open the menu and confirm the summary, then reselect desired rows because selection is intentionally in memory only. Current security hardening additionally isolates account artifacts, refuses unlabeled or duplicate account evidence, and uses descriptor-relative no-follow file operations before any future public release.
 
 #### Next Actions
 
@@ -187,11 +187,11 @@ Complete guides and the local verification handoff.
 
 #### Acceptance
 
-- All recorded gates pass and live launch remains disabled.
+- All recorded handoff gates pass and any live launch remains behind the explicit verification boundary.
 
 #### Current Status
 
-Configuration and all local verification are complete; the workstream is ready for human review.
+Configuration and the local handoff verification are complete; the historical disabled-by-policy handoff is distinct from ISSUE-06 live verification.
 
 #### Next Actions
 
@@ -237,11 +237,12 @@ Record only decisions that are difficult to reverse or surprising without contex
 
 ## Verification
 
-- `python3 -m unittest discover -s tests -v` passes 61 tests.
+- `python3 -m unittest discover -s tests -v` passes the repository test suite.
 - `python3 -m compileall -q src hooks scripts`, `git diff --check`, and the repository docs validator pass.
 - The runtime configuration is owner-only and its configured executable passes the read-only validator.
 - The LaunchAgent remains running after its one permitted restart.
 - The account-routed executor is live and the 02:00 JST boundary produced sanitized local evidence; the UI-result confirmation remains pending until the resident process is restarted with the status display.
+- Account-scoped artifacts, duplicate-session ambiguity, malformed account metadata, shell assignment words, and descriptor-relative filesystem operations are covered by local tests.
 
 ## Completion
 

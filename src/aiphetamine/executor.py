@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Callable, Mapping
 
 from .domain import ResumeLaunchResult, ResumeRequest
+from .filesystem_security import is_secure_account_directory, validate_external_executable
 
 
 @dataclass(frozen=True)
@@ -65,6 +66,12 @@ class ClaudeResumeExecutor:
 
     @staticmethod
     def _launch_process(spec: ResumeCommandSpec) -> subprocess.Popen[bytes]:
+        if not spec.args or not validate_external_executable(Path(spec.args[0])):
+            raise OSError("unsafe_executable")
+        if spec.environment is not None:
+            config_dir = spec.environment.get("CLAUDE_CONFIG_DIR")
+            if config_dir is None or not is_secure_account_directory(Path(config_dir)):
+                raise OSError("unsafe_account_directory")
         return subprocess.Popen(
             list(spec.args),
             cwd=str(spec.cwd),

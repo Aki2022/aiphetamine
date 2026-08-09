@@ -841,11 +841,11 @@ stdout/stderrの取得、保存、キーワードマッチは代替手段に含�
 
 ## 17. Impact on Existing System
 
-- `docs/specs/architecture.md`は、rate limitイベントだけでなく候補発見・終了イベントを扱う構成へ改訂が必要。
-- 選択状態に加えて12時間の有効期限、期限切れ表示、パス不一致表示、起動失敗表示をメモリ上で管理する必要がある。
-- 短周期のUIスキャン案は廃止し、2時間固定巡回へ統合する必要がある。
-- stdout/stderr、ローカルパス、生のsession_idを保存する既存ロギング案は廃止が必要。
-- 現時点で実装コード、guide、active workstreamは存在しない。
+- `architecture.md`と実装は、rate limitイベントだけでなく候補発見・終了イベントを扱う構成へ更新済みである。
+- 選択状態、12時間の有効期限、期限切れ表示、パス不一致表示、起動失敗表示は実装済みである。
+- 短周期のUIスキャンは採用せず、2時間固定巡回へ統合している。
+- stdout/stderr、ローカルパス、生のsession_idを保存しないサニタイズ済みロギングを実装している。
+- Hook設定のマージ、LaunchAgent登録、PyObjCを含む実環境起動、自然なrate limit再Hook、実Claudeセッションのresume継続は生成または手動確認の境界にあり、未検証である。
 
 ## 18. Deferred Decisions
 

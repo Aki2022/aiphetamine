@@ -100,7 +100,16 @@ class RuntimePollCycle:
             if self._candidate_provider is not None
             else self._candidate_repository.list_candidates(now=now_utc)
         )
-        candidate_map = {candidate.session_id: candidate for candidate in candidates}
+        candidate_map: dict[str, CandidateSession] = {}
+        ambiguous: set[str] = set()
+        for candidate in candidates:
+            if candidate.session_id in ambiguous:
+                continue
+            if candidate.session_id in candidate_map:
+                ambiguous.add(candidate.session_id)
+                candidate_map.pop(candidate.session_id, None)
+                continue
+            candidate_map[candidate.session_id] = candidate
         self._selection_store.expire_due(now_utc)
         events = self._event_repository.list_events(now=now_utc)
         return candidate_map, events

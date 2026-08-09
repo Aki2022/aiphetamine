@@ -160,6 +160,7 @@ class Phase1FoundationTests(unittest.TestCase):
                 session_id="session-alpha",
                 project_path=project,
                 updated_at=now - timedelta(minutes=5),
+                account_name="main",
             )
             event = RateLimitEvent(
                 schema_version=1,
@@ -168,6 +169,7 @@ class Phase1FoundationTests(unittest.TestCase):
                 session_id="session-alpha",
                 project_path=project,
                 updated_at=now - timedelta(minutes=5),
+                account_name="main",
             )
             store = InMemorySelectionStore()
             store.activate(candidate, now)
@@ -211,6 +213,8 @@ class Phase1FoundationTests(unittest.TestCase):
             events_dir = root / "rate_limits"
             candidates_dir.mkdir()
             events_dir.mkdir()
+            (candidates_dir / "main").mkdir()
+            (events_dir / "main").mkdir()
             now = datetime(2026, 7, 21, 12, tzinfo=UTC)
             candidate = {
                 "schema_version": 1,
@@ -218,6 +222,7 @@ class Phase1FoundationTests(unittest.TestCase):
                 "session_id": "session-integrated",
                 "project_path": str(root),
                 "updated_at": "2026-07-21T11:55:00+00:00",
+                "account_name": "main",
             }
             event = {
                 "schema_version": 1,
@@ -226,12 +231,13 @@ class Phase1FoundationTests(unittest.TestCase):
                 "session_id": "session-integrated",
                 "project_path": str(root),
                 "updated_at": "2026-07-21T11:58:00+00:00",
+                "account_name": "main",
             }
             key = session_key("session-integrated")
-            (candidates_dir / f"{key}.json").write_text(
+            (candidates_dir / "main" / f"{key}.json").write_text(
                 json.dumps(candidate), encoding="utf-8"
             )
-            (events_dir / f"{key}.json").write_text(
+            (events_dir / "main" / f"{key}.json").write_text(
                 json.dumps(event), encoding="utf-8"
             )
 
@@ -258,10 +264,14 @@ class Phase1FoundationTests(unittest.TestCase):
             now = datetime(2026, 7, 21, 12, tzinfo=UTC)
 
             def make_candidate(session_id, project_path, updated_at):
-                return CandidateSession(1, "candidate", session_id, project_path, updated_at)
+                return CandidateSession(
+                    1, "candidate", session_id, project_path, updated_at, account_name="main"
+                )
 
             candidate = make_candidate("session-alpha", root, now)
-            event = RateLimitEvent(1, "rate_limit", "rate_limit", "session-alpha", root, now)
+            event = RateLimitEvent(
+                1, "rate_limit", "rate_limit", "session-alpha", root, now, account_name="main"
+            )
             store = InMemorySelectionStore()
 
             self.assertEqual(

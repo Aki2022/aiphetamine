@@ -30,10 +30,10 @@ class ProductionHookTests(unittest.TestCase):
 
             self.assertEqual(apply_event(payload, "SessionStart", root, now), "written")
             self.assertEqual(apply_event(payload, "StopFailure", root, now, "alias"), "written")
-            rate_limit_record = next((root / "rate_limits").glob("*.json"))
+            rate_limit_record = next((root / "rate_limits" / "alias").glob("*.json"))
             self.assertEqual(json.loads(rate_limit_record.read_text())["account_name"], "alias")
-            self.assertTrue((root / "candidates" / f"{key}.json").exists())
-            self.assertTrue((root / "rate_limits" / f"{key}.json").exists())
+            self.assertTrue((root / "candidates" / "unknown" / f"{key}.json").exists())
+            self.assertTrue((root / "rate_limits" / "alias" / f"{key}.json").exists())
 
     def test_hook_preserves_candidate_when_rate_limit_event_exists_at_session_end(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -47,7 +47,7 @@ class ProductionHookTests(unittest.TestCase):
             self.assertEqual(
                 apply_event(payload, "SessionEnd", root, now), "preserved_for_rate_limit"
             )
-            self.assertTrue((root / "candidates" / f"{key}.json").exists())
+            self.assertTrue((root / "candidates" / "alias" / f"{key}.json").exists())
 
     def test_hook_rejects_unallowlisted_account_name(self):
         with tempfile.TemporaryDirectory() as temp_dir:

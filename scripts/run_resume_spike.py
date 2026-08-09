@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import secrets
+import shlex
 import subprocess
 import sys
 from typing import Any, Dict, Iterable, List, Set, Tuple
@@ -109,7 +110,7 @@ def build_resume_command(
                         {
                             "type": "command",
                             "command": "env AIPHEMETINE_CAPTURE_SALT={} python3 {}".format(
-                                capture_salt, capture_script
+                                shlex.quote(capture_salt), shlex.quote(str(capture_script))
                             ),
                         }
                     ]

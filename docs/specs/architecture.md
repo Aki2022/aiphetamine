@@ -106,11 +106,11 @@ MVPでは、メニューバーUIとスケジューラを単一Pythonプロセス
 - デバッグが容易
 - 10セッションまでを動作保証・テスト規模とし、巡回処理が軽量
 
-Launch at Loginは同じエントリーポイントをLaunchAgentから起動する。
+Launch at Login用のplistは同じエントリーポイントを起動する内容として生成する。plistの登録・解除は実装の副作用にせず、オペレーターが手動で行う。
 
-MVPは専用venvを作成せず、ユーザーの既存Python環境を使用する。installスクリプト実行時の`sys.executable`を絶対パスとしてLaunchAgentへ記録し、手動起動とログイン起動で同じPythonを使う。
+MVPは専用venvを作成せず、ユーザーの既存Python環境を使用する。LaunchAgent plist生成時に指定されたPython実行ファイルを絶対パスとして記録し、手動起動とログイン起動で同じPythonを使う。
 
-installスクリプトはPython 3.11以上と必須モジュールのimport可否を検査する。不足時は既存Python環境を変更せず、導入手順を表示して非ゼロ終了する。依存パッケージの自動インストールは行わない。
+実装にはインストールスクリプトは含まれない。利用者がPython 3.11以上と必須モジュールを確認し、既存環境を変更せずに導入する。
 
 ## 5. ディレクトリ構成
 
@@ -181,8 +181,8 @@ aiphetamine/
 
 ```text
 ~/.local/share/aiphetamine/
-├── candidates/
-├── rate_limits/
+├── candidates/{main,alias,unknown}/
+├── rate_limits/{main,alias,unknown}/
 └── logs/
 ```
 
@@ -199,7 +199,7 @@ INSTANCE_LOCK = DATA_DIR / "instance.lock"
 
 権限と所有境界:
 
-- データルート、`candidates/`、`rate_limits/`、`logs/`はowner-onlyの`0700`
+- データルート、`candidates/`、`rate_limits/`、各アカウントスコープ、`logs/`はowner-onlyの`0700`
 - 候補JSON、rate limit JSON、設定、ログは`0600`
 - `instance.lock`は`0600`で作成し、起動中だけ非ブロッキング排他lockを保持する
 - データルートから処理対象ファイルまでsymlinkを拒否する
@@ -216,7 +216,7 @@ INSTANCE_LOCK = DATA_DIR / "instance.lock"
 }
 ```
 
-installスクリプトがClaude実行ファイルのsymlinkを`resolve(strict=True)`で実体パスへ解決し、`config.json`へ`0600`で原子的に保存する。アプリは未知のschema version、相対パス、symlink、非通常ファイル、実行不可を設定エラーとして扱う。Launch at Login状態はLaunchAgent登録状態から読み、configへ重複保存しない。
+実装は`config.json`を生成せず読み取りだけを行う。読み込み時は設定ファイルと親ディレクトリ、Claude実行ファイル、実行ファイルの親ディレクトリについて、所有者・権限・symlink・通常ファイル・実行可能性を検証する。Launch at Loginの登録状態は管理せず、plist生成後の手動操作に委ねる。
 
 LaunchAgent:
 
@@ -324,10 +324,13 @@ class SessionActivation:
 
 JSONは「rate limitに到達した」という単発イベントである。
 
-候補発見記録とrate limitイベントは、寿命と操作が異なるため用途別ディレクトリへ分離する。
+候補発見記録とrate limitイベントは、寿命と操作が異なるため用途別ディレクトリへ分離する。さらに、アカウント別のsession IDが同じファイル名を共有しないよう、`main`、`alias`、`unknown`のスコープへ分離する。
 
 - `candidates/`: session_idごとの最新候補記録。起動時に読み込むが、有効化状態や期限は保存しない
 - `rate_limits/`: rate limit到達を表す単発イベント。claim、complete、restore、起動時の鮮度付きcleanupの対象
+- `unknown/`: アカウントラベルを持たない既存Hook記録の隔離先。表示はできても自動resume対象にはしない
+
+旧形式の用途別ディレクトリ直下にあるJSONは、移行期間の読み取り対象として扱う。ただし、旧形式にアカウントラベルがあっても共有namespaceのため自動resume対象にはしない。新規Hook書き込みは必ずアカウントスコープへ行う。
 
 候補発見記録を有効化状態のDBとして扱わない。
 
@@ -355,7 +358,8 @@ JSONは「rate limitに到達した」という単発イベントである。
   "session_name": "implement-dashboard",
   "project_name": "research-platform",
   "project_path": "<absolute-project-path>",
-  "updated_at": "2026-07-20T01:42:15+09:00"
+  "updated_at": "2026-07-20T01:42:15+09:00",
+  "account_name": "main"
 }
 ```
 
@@ -373,7 +377,10 @@ JSONは「rate limitに到達した」という単発イベントである。
 }
 ```
 
-`account_name`はHook設定で明示された場合だけ保存する任意項目であり、認証情報やメールアドレスではない。
+`account_name`はHook設定で明示された場合だけ保存する任意項目であり、認証情報やメールアドレスではない。ファイルの親スコープが`main`または`alias`の場合は、そのスコープが正規のアカウント識別子であり、JSON内の値と一致しなければ無効とする。
+同じsession IDが複数のアカウントのmetadataに存在する場合は、アカウントを
+一意に決定できないため表示・resume対象から除外する。明示された
+`account_name`がある場合は、そのアカウントのmetadataだけを参照する。
 
 ## 8.4 バリデーション
 
@@ -388,6 +395,7 @@ JSONは「rate limitに到達した」という単発イベントである。
 - ファイル名がsession_idから再計算したsession_keyと一致する
 - `updated_at`が現在UTCより未来でも5分以内である
 - `account_name`が存在する場合は設定済みのアカウント識別子である
+- 同じsession IDが複数ファイルまたは複数アカウントスコープに現れた場合は、候補・イベントとも曖昧として除外する
 
 rate limitイベント追加条件:
 
@@ -397,6 +405,7 @@ resume前追加条件:
 
 - `project_path.exists()`
 - `project_path.is_dir()`
+- 候補とイベントの`account_name`がともに存在し、同じ値である
 
 任意項目が不正でも、必須項目が有効なら無視してよい。
 
@@ -472,7 +481,7 @@ Hook失敗はClaude Code本体を妨げない。
 
 ## 9.6 Hook設定の適用境界
 
-installスクリプトはAIphetamine用HookスクリプトとClaude Code向け設定断片を生成し、JSON構文と参照先を検証する。Claude Codeの既存設定ファイルは自動編集しない。
+`scripts/generate_hook_config.py`はAIphetamine用Hookスクリプトを参照するClaude Code向け設定断片を生成し、Claude Codeの既存設定ファイルは自動編集しない。
 
 ユーザーが生成内容と既存Hookとの競合を確認し、手動で設定へマージする。READMEに適用、検証、解除手順を記載する。
 
@@ -749,13 +758,13 @@ cwd=str(project_path)
 - 基本は現在の環境を継承
 - `ResumeRequest.account_name`が`alias`の場合は検証済みの第二設定ディレクトリを`CLAUDE_CONFIG_DIR`へ設定する
 - アカウント名が不明または候補とイベントで不一致の場合はresumeを起動しない
-- Claude実行にはinstallスクリプトが保存した検証済み絶対パスを使い、実行時PATH探索は行わない
+- Claude実行にはローカル設定から読み込んだ検証済み絶対パスを使い、実行時PATH探索は行わない
 
 ## 14.1 Claude実行ファイル探索
 
-installスクリプト実行時に`shutil.which("claude")`相当の探索でClaude実行ファイルを解決し、絶対パスをローカル設定へ保存する。既知パスのハードコードやOS cron、ログインシェル経由の探索は行わない。
+Claude実行ファイルの解決・設定ファイルへの保存を行うインストール処理は提供しない。利用者が用意した絶対パスを設定へ登録し、実行時は既知パスのハードコードやOS cron、ログインシェル経由の探索を行わない。
 
-アプリ起動時は保存済み絶対パスが存在し、通常ファイルで、実行可能であることを検証する。検証に失敗した場合はresumeを行わず、候補行へ`起動失敗`を表示し、サニタイズした分類をログへ記録する。Claudeのインストール先が変わった場合はinstallスクリプトを再実行して設定を再生成する。
+アプリ起動時は保存済み絶対パスが存在し、通常ファイルで、実行可能であることを検証する。検証に失敗した場合はresumeを行わず、候補行へ`起動失敗`を表示し、サニタイズした分類をログへ記録する。Claudeのインストール先が変わった場合は設定ファイルを利用者が更新する。
 
 ## 14.2 元プロセスとの関係
 
@@ -844,13 +853,13 @@ WAITING条件:
 - 有効状態確認
 - 削除
 
-Launch at LoginをOFFにした場合はLaunchAgentを登録解除し、AIphetamine専用plistを削除する。ONにした場合は、保存済みのPython、アプリのエントリーポイント、設定パスの絶対パスからplistを一時ファイルへ生成し、原子的に置換して登録する。
+LaunchAgent managerは、保存済みのPython、アプリのエントリーポイント、設定パスの絶対パスからplistを一時ファイルへ生成し、原子的に置換する。LaunchAgentの登録・解除やON/OFFのUI操作は提供せず、利用者が手動で行う。
 
-OFF状態では専用plistが存在しないことを基本とする。登録解除済みだが削除に失敗した場合はOFFとして扱い、サニタイズしたエラー分類を表示・記録する。
+登録解除や専用plistの削除は手動の運用境界であり、アプリは生成済みplistの存在だけを確認する。
 
 ## 16.1 uninstall境界
 
-通常のuninstallはLaunchAgentを登録解除し、AIphetamine専用plistを削除する。ユーザーが手動でマージしたClaude Code Hook設定は編集せず、解除手順を表示する。
+通常の運用でLaunchAgentを登録解除し、AIphetamine専用plistを削除する場合は利用者が手動で行う。ユーザーが手動でマージしたClaude Code Hook設定は編集せず、解除手順を表示する。
 
 ローカル設定、`candidates/`、`rate_limits/`、`logs/`は通常uninstallでは保持する。明示的な`--purge-data`指定時だけ、データルートが期待する固定パス、実行ユーザー所有、非symlinkであることを検証してから削除する。検証に失敗した場合は削除せず停止する。
 
@@ -1217,4 +1226,5 @@ JSONは残し、ログへ記録する。
 
 - activeな`PRD.md`で、候補発見・終了イベント、12時間の有効期限、2時間巡回への統合、安全なログ制約が追加された。
 - 候補発見・終了イベント、12時間の有効期限、2時間巡回への統合、安全なログ制約を本architectureへ反映中である。
-- Phase 1のrepository、selection、boundary、resume eligibility基盤、runtime coreのatomic event操作・poll cycle・固定resume command契約、およびread-only dry-run app shellがactive workstreamで実装済みである。メニューバーUI、LaunchAgent、実Claude subprocess実行、production Hook適用、自然なrate limit再Hookは未実装・未検証である。
+- 現在のリポジトリでは、repository、selection、boundary、resume eligibility基盤、runtime coreのatomic event操作・poll cycle・固定resume command、Hook、メニューバーUI、LaunchAgent plist生成、およびread-only dry-run app shellが実装済みである。
+- Claude設定へのHookマージ、LaunchAgentの登録、PyObjCを含む実環境のメニューバー起動、自然なrate limit再Hook、実Claudeセッションのresume継続は手動操作または環境依存であり、このリポジトリでは未検証である。

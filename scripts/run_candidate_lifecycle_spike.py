@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import secrets
+import shlex
 import shutil
 import subprocess
 import sys
@@ -31,7 +32,9 @@ def build_lifecycle_command(
                         {
                             "type": "command",
                             "command": "env AIPHEMETINE_CAPTURE_SALT={} AIPHEMETINE_LIFECYCLE_ROOT={} python3 {}".format(
-                                capture_salt, lifecycle_root, lifecycle_script
+                                shlex.quote(capture_salt),
+                                shlex.quote(str(lifecycle_root)),
+                                shlex.quote(str(lifecycle_script)),
                             ),
                         }
                     ]

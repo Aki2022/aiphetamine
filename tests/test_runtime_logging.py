@@ -59,17 +59,20 @@ class RuntimeLoggingTests(unittest.TestCase):
             runtime = ApplicationRuntime(root, log_salt=b"test-salt")
             runtime.startup(now)
             session_id = "session-private-value"
+            (root / "candidates" / "main").mkdir()
+            (root / "rate_limits" / "main").mkdir()
             candidate = {
                 "schema_version": 1,
                 "record_type": "candidate",
                 "session_id": session_id,
                 "project_path": str(root),
                 "updated_at": "2026-07-21T11:59:00+00:00",
+                "account_name": "main",
             }
-            (root / "candidates" / f"{session_key(session_id)}.json").write_text(
+            (root / "candidates" / "main" / f"{session_key(session_id)}.json").write_text(
                 json.dumps(candidate), encoding="utf-8"
             )
-            (root / "rate_limits" / f"{session_key(session_id)}.json").write_text(
+            (root / "rate_limits" / "main" / f"{session_key(session_id)}.json").write_text(
                 json.dumps({**candidate, "record_type": "rate_limit", "reason": "rate_limit"}),
                 encoding="utf-8",
             )

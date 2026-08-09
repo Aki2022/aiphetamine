@@ -70,7 +70,9 @@ python3 scripts/generate_hook_config.py \
 ```
 
 Review the generated JSON and merge it manually into the intended Claude Code
-settings file. `--account-name` accepts only `main` or `alias`. For the second
+settings file. The generator parses the command into argv tokens, rejects shell
+metacharacters, and quotes each token before adding Hook arguments.
+`--account-name` accepts only `main` or `alias`. For the second
 isolated account, generate a separate fragment with `--account-name alias` and
 use `~/.claude-seat2` as that account's `CLAUDE_CONFIG_DIR`.
 

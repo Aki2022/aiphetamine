@@ -7,8 +7,11 @@ import logging
 import os
 import re
 import secrets
+import stat
 from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
+
+from .filesystem_security import ensure_private_directory, ensure_private_file
 
 
 _COMPONENTS = frozenset(
@@ -34,22 +37,42 @@ _ERROR_CLASSES = frozenset(
 _CORRELATION_ID = re.compile(r"^[0-9a-f]{12}$")
 
 
+class _SecureTimedRotatingFileHandler(TimedRotatingFileHandler):
+    def _open(self):
+        flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(self.baseFilename, flags, 0o600)
+        try:
+            file_stat = os.fstat(descriptor)
+            current_uid = getattr(os, "geteuid", os.getuid)()
+            if not stat.S_ISREG(file_stat.st_mode) or file_stat.st_uid != current_uid:
+                raise OSError("unsafe_log_file")
+            os.fchmod(descriptor, 0o600)
+            return os.fdopen(
+                descriptor,
+                self.mode,
+                encoding=self.encoding,
+                errors=self.errors,
+            )
+        except Exception:
+            os.close(descriptor)
+            raise
+
+
 class SanitizedLogger:
     """Write only allowlisted operational fields to seven-day local logs."""
 
     def __init__(self, logs_root: Path, *, salt: bytes | None = None) -> None:
-        logs_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        ensure_private_directory(logs_root)
+        log_path = logs_root / "aiphetamine.log"
+        ensure_private_file(log_path)
         self._salt = salt if salt is not None else secrets.token_bytes(32)
-        self._handler = TimedRotatingFileHandler(
-            logs_root / "aiphetamine.log",
+        self._handler = _SecureTimedRotatingFileHandler(
+            str(log_path),
             when="midnight",
             backupCount=7,
             encoding="utf-8",
         )
-        try:
-            os.chmod(logs_root / "aiphetamine.log", 0o600)
-        except OSError:
-            pass
         self._handler.setFormatter(
             logging.Formatter("%(asctime)s %(levelname)s %(message)s", "%Y-%m-%dT%H:%M:%S%z")
         )

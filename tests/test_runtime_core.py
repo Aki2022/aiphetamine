@@ -194,6 +194,9 @@ class RuntimeCoreTests(unittest.TestCase):
             events_dir = root / "rate_limits"
             candidates_dir.mkdir()
             events_dir.mkdir()
+            (events_dir / "alias").mkdir()
+            (candidates_dir / "main").mkdir()
+            (events_dir / "main").mkdir()
             now = datetime(2026, 7, 21, 12, tzinfo=UTC)
 
             def write_record(session_id, record_type, **extra):
@@ -203,9 +206,10 @@ class RuntimeCoreTests(unittest.TestCase):
                     "session_id": session_id,
                     "project_path": str(root),
                     "updated_at": "2026-07-21T11:59:00+00:00",
+                    "account_name": "main",
                     **extra,
                 }
-                target = events_dir if record_type == "rate_limit" else candidates_dir
+                target = events_dir / "main" if record_type == "rate_limit" else candidates_dir / "main"
                 (target / f"{session_key(session_id)}.json").write_text(
                     json.dumps(payload), encoding="utf-8"
                 )
@@ -215,8 +219,8 @@ class RuntimeCoreTests(unittest.TestCase):
             write_record("session-failure", "candidate")
             write_record("session-failure", "rate_limit", reason="rate_limit")
             candidates = [
-                CandidateSession(1, "candidate", "session-success", root, now),
-                CandidateSession(1, "candidate", "session-failure", root, now),
+                CandidateSession(1, "candidate", "session-success", root, now, account_name="main"),
+                CandidateSession(1, "candidate", "session-failure", root, now, account_name="main"),
             ]
 
             class FakeExecutor:
@@ -241,8 +245,8 @@ class RuntimeCoreTests(unittest.TestCase):
                 {outcome.session_id: outcome.status for outcome in outcomes},
                 {"session-success": "completed", "session-failure": "restored"},
             )
-            self.assertFalse((events_dir / f"{session_key('session-success')}.json").exists())
-            self.assertTrue((events_dir / f"{session_key('session-failure')}.json").exists())
+            self.assertFalse((events_dir / "main" / f"{session_key('session-success')}.json").exists())
+            self.assertTrue((events_dir / "main" / f"{session_key('session-failure')}.json").exists())
 
     def test_poll_cycle_uses_enriched_candidate_provider_for_account_routing(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -251,6 +255,7 @@ class RuntimeCoreTests(unittest.TestCase):
             events_dir = root / "rate_limits"
             candidates_dir.mkdir()
             events_dir.mkdir()
+            (events_dir / "alias").mkdir()
             now = datetime(2026, 7, 21, 12, tzinfo=UTC)
             session_id = "session-provider-alias"
             event = {
@@ -262,7 +267,7 @@ class RuntimeCoreTests(unittest.TestCase):
                 "updated_at": "2026-07-21T11:59:00+00:00",
                 "account_name": "alias",
             }
-            (events_dir / f"{session_key(session_id)}.json").write_text(
+            (events_dir / "alias" / f"{session_key(session_id)}.json").write_text(
                 json.dumps(event), encoding="utf-8"
             )
             candidate = CandidateSession(
@@ -297,6 +302,8 @@ class RuntimeCoreTests(unittest.TestCase):
             events_dir = root / "rate_limits"
             candidates_dir.mkdir()
             events_dir.mkdir()
+            (candidates_dir / "main").mkdir()
+            (events_dir / "main").mkdir()
             now = datetime(2026, 7, 21, 12, tzinfo=UTC)
             session_id = "session-exception"
             payload = {
@@ -306,12 +313,13 @@ class RuntimeCoreTests(unittest.TestCase):
                 "session_id": session_id,
                 "project_path": str(root),
                 "updated_at": "2026-07-21T11:59:00+00:00",
+                "account_name": "main",
             }
-            (events_dir / f"{session_key(session_id)}.json").write_text(
+            (events_dir / "main" / f"{session_key(session_id)}.json").write_text(
                 json.dumps(payload), encoding="utf-8"
             )
-            candidate = CandidateSession(1, "candidate", session_id, root, now)
-            (candidates_dir / f"{session_key(session_id)}.json").write_text(
+            candidate = CandidateSession(1, "candidate", session_id, root, now, account_name="main")
+            (candidates_dir / "main" / f"{session_key(session_id)}.json").write_text(
                 json.dumps({**payload, "record_type": "candidate"}), encoding="utf-8"
             )
 
@@ -331,7 +339,7 @@ class RuntimeCoreTests(unittest.TestCase):
             ).run(now)
 
             self.assertEqual(outcomes[0].status, "restored")
-            self.assertTrue((events_dir / f"{session_key(session_id)}.json").exists())
+            self.assertTrue((events_dir / "main" / f"{session_key(session_id)}.json").exists())
 
     def test_poll_cycle_preserves_recreated_event_when_launch_fails(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -340,6 +348,8 @@ class RuntimeCoreTests(unittest.TestCase):
             events_dir = root / "rate_limits"
             candidates_dir.mkdir()
             events_dir.mkdir()
+            (candidates_dir / "main").mkdir()
+            (events_dir / "main").mkdir()
             now = datetime(2026, 7, 21, 12, tzinfo=UTC)
             session_id = "session-recreated"
             payload = {
@@ -349,18 +359,19 @@ class RuntimeCoreTests(unittest.TestCase):
                 "session_id": session_id,
                 "project_path": str(root),
                 "updated_at": "2026-07-21T11:59:00+00:00",
+                "account_name": "main",
             }
-            (events_dir / f"{session_key(session_id)}.json").write_text(
+            (events_dir / "main" / f"{session_key(session_id)}.json").write_text(
                 json.dumps(payload), encoding="utf-8"
             )
-            candidate = CandidateSession(1, "candidate", session_id, root, now)
-            (candidates_dir / f"{session_key(session_id)}.json").write_text(
+            candidate = CandidateSession(1, "candidate", session_id, root, now, account_name="main")
+            (candidates_dir / "main" / f"{session_key(session_id)}.json").write_text(
                 json.dumps({**payload, "record_type": "candidate"}), encoding="utf-8"
             )
 
             class RecreatingExecutor:
                 def launch(self, request):
-                    (events_dir / f"{session_key(session_id)}.json").write_text(
+                    (events_dir / "main" / f"{session_key(session_id)}.json").write_text(
                         json.dumps({**payload, "updated_at": "2026-07-21T12:00:00+00:00"}),
                         encoding="utf-8",
                     )
@@ -378,10 +389,10 @@ class RuntimeCoreTests(unittest.TestCase):
             ).run(now)
 
             self.assertEqual(outcomes[0].status, "restored")
-            self.assertTrue((events_dir / f"{session_key(session_id)}.json").exists())
+            self.assertTrue((events_dir / "main" / f"{session_key(session_id)}.json").exists())
             self.assertIn(
                 "12:00:00",
-                (events_dir / f"{session_key(session_id)}.json").read_text(encoding="utf-8"),
+                (events_dir / "main" / f"{session_key(session_id)}.json").read_text(encoding="utf-8"),
             )
 
 

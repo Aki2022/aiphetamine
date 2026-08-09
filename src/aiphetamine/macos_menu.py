@@ -11,6 +11,7 @@ _POLL_STATUS_LABELS = {
     "unselected": "未選択",
     "expired": "期限切れ",
     "candidate_missing": "候補なし",
+    "account_unknown": "アカウント不明",
     "account_mismatch": "アカウント不一致",
     "path_mismatch": "パス不一致",
     "event_stale": "イベント期限切れ",

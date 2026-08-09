@@ -1,3 +1,10 @@
 __pycache__/
 *.py[cod]
 .DS_Store
+.aiphetamine-lifecycle-*/
+.aiphetamine-resume-*/
+local.aiphetamine.menubar.plist
+*.local.json
+*.local.plist
+*.local.log
+aiphetamine.log
