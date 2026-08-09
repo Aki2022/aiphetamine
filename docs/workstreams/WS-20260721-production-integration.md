@@ -213,7 +213,7 @@ Normal Hook evidence and all local/runtime gates are complete; the workstream is
 - `python3 -m unittest discover -s tests -v` passes 46 tests.
 - `python3 -m compileall -q src hooks scripts` passes.
 - `git diff --check` and the repository docs validator pass.
-- The registered AIphetamine-only LaunchAgent plist passes `plutil -lint` and reports a running state.
+- The generated AIphetamine-only LaunchAgent plist passes `plutil -lint`; registration and running state are outside the current source-tree release boundary.
 - The selected primary Claude Code configuration has four AIphetamine Hook entries and remains valid JSON.
 - A user-generated normal prompt produced nine valid candidate records; only count, record type, and required-field validity were retained.
 

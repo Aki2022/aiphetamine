@@ -232,16 +232,16 @@ Record only decisions that are difficult to reverse or surprising without contex
 
 ## Human Review Checkpoint
 
-- Completed: interactive candidate/quit bindings, fixed-boundary scheduler integration, disabled-by-policy executor, executable configuration validator, owner-only configuration creation, and one AIphetamine LaunchAgent restart.
-- Final live-resume verification is in progress after the operator's explicit approval.
+- Completed in the source tree: interactive candidate/quit bindings, fixed-boundary scheduler integration, disabled-by-policy executor, and executable configuration validator. Owner-only configuration creation and LaunchAgent registration remain manual operator steps.
+- Final live-resume verification is intentionally outside the current release boundary; no live completion is claimed here.
 
 ## Verification
 
 - `python3 -m unittest discover -s tests -v` passes the repository test suite.
 - `python3 -m compileall -q src hooks scripts`, `git diff --check`, and the repository docs validator pass.
 - The runtime configuration is owner-only and its configured executable passes the read-only validator.
-- The LaunchAgent remains running after its one permitted restart.
-- The account-routed executor is implemented and the 02:00 JST boundary produced sanitized local evidence; the remaining UI-result confirmation is an operational human check, not an implementation gap.
+- The generated LaunchAgent plist is locally validated; registration and running state are not managed or asserted by the current source tree.
+- The account-routed executor is implemented and covered by local boundary tests; natural rate-limit and live Claude resume behavior remain unverified.
 - Account-scoped artifacts, duplicate-session ambiguity, malformed account metadata, shell assignment words, and descriptor-relative filesystem operations are covered by local tests.
 
 ## Completion

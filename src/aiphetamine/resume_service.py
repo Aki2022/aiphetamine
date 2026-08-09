@@ -39,8 +39,13 @@ class RuntimePollCycle:
         self._executor = executor
         self._candidate_provider = candidate_provider
 
-    def initialize(self) -> int:
-        return self._event_repository.cleanup_on_startup()
+    def initialize(self, now_utc: datetime) -> int:
+        """Clean stale events without deleting fresh ambiguous records."""
+
+        return self._event_repository.cleanup_on_startup(
+            now=now_utc,
+            preserve_fresh=True,
+        )
 
     def run(self, now_utc: datetime) -> tuple[PollOutcome, ...]:
         candidate_map, events = self._read_cycle_state(now_utc)

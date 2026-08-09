@@ -536,6 +536,46 @@ class RuntimeCoreTests(unittest.TestCase):
             self.assertEqual(outcomes[0].status, "completed")
             self.assertEqual(requests[0].account_name, "alias")
 
+    def test_poll_cycle_initialize_preserves_fresh_ambiguous_events(self):
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as temp_dir:
+            root = Path(temp_dir)
+            candidates_dir = root / "candidates"
+            events_dir = root / "rate_limits"
+            candidates_dir.mkdir(mode=0o700)
+            events_dir.mkdir(mode=0o700)
+            now = datetime(2026, 7, 21, 12, tzinfo=UTC)
+            session_id = "initialize-duplicate"
+            paths = []
+            for account in ("main", "alias"):
+                scope = events_dir / account
+                scope.mkdir(mode=0o700)
+                path = scope / f"{session_key(session_id)}.json"
+                path.write_text(
+                    json.dumps(
+                        {
+                            "schema_version": 1,
+                            "record_type": "rate_limit",
+                            "reason": "rate_limit",
+                            "session_id": session_id,
+                            "project_path": str(root),
+                            "updated_at": "2026-07-21T11:59:00+00:00",
+                            "account_name": account,
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                paths.append(path)
+
+            removed = RuntimePollCycle(
+                candidates_dir,
+                events_dir,
+                InMemorySelectionStore(),
+                executor=None,
+            ).initialize(now)
+
+            self.assertEqual(removed, 0)
+            self.assertTrue(all(path.exists() for path in paths))
+
     def test_poll_cycle_restores_event_when_executor_raises(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
