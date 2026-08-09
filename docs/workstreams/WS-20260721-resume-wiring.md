@@ -24,7 +24,7 @@ test_gates:
 required_reviewers: []
 subagent_plan:
   mode: parent-only
-  reason: "The menu and scheduler connect to the live LaunchAgent-owned process."
+  reason: "The menu and scheduler are wired in the source tree; LaunchAgent registration remains a manual operator step."
 ---
 
 # Resume Wiring
@@ -106,11 +106,11 @@ Connect AppKit timers and background dispatch to the existing one-shot scheduler
 
 #### Current Status
 
-The running entry point starts the one-shot scheduler, uses a background worker, and routes polls through the validated account-routed executor. Invalid executable configuration still falls back to `DisabledResumeExecutor`.
+The source-tree entry point starts the one-shot scheduler, uses a background worker, and routes polls through the validated account-routed executor. Invalid executable configuration still falls back to `DisabledResumeExecutor`. A running LaunchAgent is not asserted by this workstream.
 
 #### Next Actions
 
-- Existing scheduler and executor tests pass; the LaunchAgent reports a running state after the safe reload.
+- Existing scheduler and executor tests pass; LaunchAgent registration and runtime state remain outside the source-tree release boundary.
 
 ### ISSUE-03-resume-configuration
 
@@ -143,7 +143,7 @@ Decision record: [ADR-20260809-account-routed-resume](../adrs/ADR-20260809-accou
 
 #### Next Actions
 
-- Restart the LaunchAgent, reselect the intended menu rows, and observe the next fixed boundary.
+- Generate and manually review the LaunchAgent plist before any operator-controlled registration; do not assume a registered or running LaunchAgent.
 
 ### ISSUE-06-live-resume-enablement
 
@@ -167,11 +167,11 @@ Enable the account-routed resume executor for sessions explicitly checked in the
 
 #### Current Status
 
-The operator approved live resume after confirming the menu rows. The executor and enriched candidate provider are implemented and unit-tested. The 02:00 JST boundary ran for the selected resident process and local diagnostics showed five rate-limit events completed while one older unmatched event remained. Because the menu previously exposed only selection state, the result was not visible to the operator; the menu now displays the latest poll boundary and aggregate statuses without private identifiers. The resident LaunchAgent was restarted with the operator's approval and is running the updated code; the remaining human check is to open the menu and confirm the summary, then reselect desired rows because selection is intentionally in memory only. Current security hardening additionally isolates account artifacts, refuses unlabeled or duplicate account evidence, and uses descriptor-relative no-follow file operations before any future public release.
+The executor and enriched candidate provider are implemented and unit-tested. A historical operator confirmation of one live boundary is retained in the project history, but it is not a machine-readable or repeatable E2E guarantee. This workstream does not assert a currently registered or running LaunchAgent, and no new live resume is required for the source-tree release. The menu displays the latest poll boundary and aggregate statuses without private identifiers. Current security hardening additionally isolates account artifacts, refuses unlabeled or duplicate account evidence, and uses descriptor-relative no-follow file operations.
 
 #### Next Actions
 
-- Human checkpoint: reselect the intended rows, open the menu, and confirm the latest poll summary is visible. Do not trigger an additional Claude resume solely for this UI check.
+- Human checkpoint: if live operation is later approved, manually register the reviewed plist and then reselect rows; do not trigger an additional Claude resume solely for this documentation or UI check.
 
 ### ISSUE-04-wiring-handoff
 

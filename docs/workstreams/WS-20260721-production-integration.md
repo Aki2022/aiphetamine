@@ -1,7 +1,7 @@
 ---
 schema_version: 2
 id: WS-20260721-production-integration
-status: active
+status: archived
 created_at: 2026-07-21
 updated_at: 2026-07-21
 branch: main
@@ -20,7 +20,7 @@ test_gates:
     - git diff --check
     - python3 <origin-doc-update-skill>/scripts/validate_repo_docs.py .
   quality:
-    - PyObjC import, menu-bar startup, settings JSON, LaunchAgent state, and normal Hook evidence are verified without persisting sensitive values
+    - Historical PyObjC, settings JSON, and normal Hook observations are recorded without persisting sensitive values; current release uses manual plist review and does not manage LaunchAgent state
 required_reviewers: []
 subagent_plan:
   mode: parent-only
@@ -33,12 +33,16 @@ subagent_plan:
 
 Apply and verify the approved macOS integration for AIphetamine without intentionally stimulating a rate limit or retaining sensitive operational data.
 
-## Success Criteria
+## Historical Success Criteria
 
-- PyObjC is available and the menu-bar adapter can start.
-- One generated Hook fragment is merged into one intended Claude settings file without replacing existing Hooks.
-- One AIphetamine LaunchAgent plist is registered and its state is verified.
-- One naturally occurring ordinary Hook event is observed through sanitized evidence.
+The following criteria describe the 2026-07-21 operator integration record. They are
+not current source-tree release claims. The current source tree only generates
+Hook/plist artifacts; settings merge and LaunchAgent registration remain manual.
+
+- PyObjC availability and menu-bar startup were checked in the historical integration attempt.
+- One generated Hook fragment was reviewed for merge into one intended Claude settings file.
+- One AIphetamine-only plist was generated and reviewed; registration is a manual operator action and is not managed by this repository.
+- One naturally occurring ordinary Hook event was observed through sanitized evidence.
 
 ## Authorization Envelope
 
@@ -126,17 +130,18 @@ One generated fragment was appended to the selected settings file with a rollbac
 
 #### Goal
 
-Start the menu bar and register one AIphetamine LaunchAgent.
+Historically start the menu bar and generate one AIphetamine LaunchAgent plist for
+manual operator review. Registration is not performed by the current source tree.
 
 #### Acceptance
 
 - PyObjC import succeeds and the menu adapter starts.
-- The registered plist has the approved label and is syntactically valid.
+- The generated plist has the approved label and is syntactically valid.
 - No unrelated LaunchAgent is changed.
 
 #### Current Status
 
-PyObjC import succeeds. The AIphetamine-only plist was generated, passed syntax validation earlier, registered once, and its LaunchAgent state is registered.
+PyObjC import and plist syntax were checked in the historical integration attempt. The current release does not assert or manage a registered LaunchAgent; registration, if desired, is a separate human action after reviewing the generated plist.
 
 #### Next Actions
 
@@ -200,7 +205,7 @@ Normal Hook evidence and all local/runtime gates are complete; the workstream is
 
 ## Human Review Checkpoint
 
-- Completed: one PyObjC installation, non-destructive Hook merge, one AIphetamine-only LaunchAgent registration, menu-bar process startup verification, and one user-generated ordinary Hook event.
+- Historical record: PyObjC/menu-bar checks, non-destructive Hook review, plist generation, and one user-generated ordinary Hook event. Current release does not install/register LaunchAgents or merge settings automatically.
 - Final local and runtime gates pass. No rate limit was triggered or claimed.
 
 ## Verification

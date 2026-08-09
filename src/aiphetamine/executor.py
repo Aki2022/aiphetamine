@@ -5,6 +5,7 @@ from __future__ import annotations
 import subprocess
 import ctypes
 from dataclasses import dataclass
+import hashlib
 import os
 from pathlib import Path
 import signal
@@ -18,6 +19,9 @@ from .filesystem_security import (
     open_trusted_directory,
     open_verified_executable,
 )
+
+
+_UF_IMMUTABLE = 0x00000002
 
 
 @dataclass(frozen=True)
@@ -75,15 +79,48 @@ project_path = sys.argv[4]
 project_device = int(sys.argv[5])
 project_inode = int(sys.argv[6])
 claude_path = sys.argv[7]
+claude_digest = sys.argv[8]
+UF_IMMUTABLE = 0x00000002
 
 def same_path(path, device, inode):
     stat_result = os.stat(path, follow_symlinks=False)
     return (stat_result.st_dev, stat_result.st_ino) == (device, inode)
 
+def digest(path):
+    descriptor = os.open(
+        path,
+        os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
+    )
+    try:
+        file_stat = os.fstat(descriptor)
+        path_stat = os.stat(path, follow_symlinks=False)
+        if (
+            path_stat.st_dev,
+            path_stat.st_ino,
+        ) != (
+            file_stat.st_dev,
+            file_stat.st_ino,
+        ) or (
+            file_stat.st_mode & 0o170000 != 0o100000
+            or file_stat.st_mode & 0o022
+            or not getattr(file_stat, "st_flags", 0) & UF_IMMUTABLE
+        ):
+            raise OSError("unsafe_executable_snapshot")
+        hasher = __import__("hashlib").sha256()
+        with os.fdopen(descriptor, "rb") as stream:
+            descriptor = -1
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                hasher.update(chunk)
+        return hasher.hexdigest()
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
 try:
     if os.environ.get("CLAUDE_CONFIG_DIR") != config_path:
-        raise OSError("unsafe_account_directory")
-    if not same_path(config_path, config_device, config_inode):
+        if config_path:
+            raise OSError("unsafe_account_directory")
+    if config_path and not same_path(config_path, config_device, config_inode):
         raise OSError("unsafe_account_directory")
     if not same_path(project_path, project_device, project_inode):
         raise OSError("unsafe_project_directory")
@@ -96,13 +133,15 @@ try:
             raise OSError("unsafe_project_directory")
     finally:
         os.close(current_directory)
-    os.execve(claude_path, sys.argv[7:], os.environ)
+    if digest(claude_path) != claude_digest:
+        raise OSError("unsafe_executable_snapshot")
+    os.execve(claude_path, [claude_path, *sys.argv[9:]], os.environ)
 except BaseException:
     os._exit(125)
 '''
 
 
-def _copy_executable_snapshot(source_fd: int, target: Path) -> None:
+def _copy_executable_snapshot(source_fd: int, target: Path) -> str:
     """Copy the already-open executable into a private, read-only staging file."""
 
     duplicate_fd = os.dup(source_fd)
@@ -139,11 +178,24 @@ def _copy_executable_snapshot(source_fd: int, target: Path) -> None:
             snapshot.flush()
             os.fsync(snapshot.fileno())
         os.chmod(target, 0o500, follow_symlinks=False)
+        os.chflags(target, _UF_IMMUTABLE, follow_symlinks=False)
+        return hashlib.sha256(payload).hexdigest()
     finally:
         if duplicate_fd >= 0:
             os.close(duplicate_fd)
         if snapshot_fd >= 0:
             os.close(snapshot_fd)
+
+
+def _remove_executable_snapshot(path: Path) -> None:
+    try:
+        os.chflags(path, 0, follow_symlinks=False)
+    except OSError:
+        pass
+    try:
+        path.unlink()
+    except OSError:
+        pass
 
 
 def _ctypes_function(library, name: str, *, restype, argtypes):
@@ -255,7 +307,7 @@ def _launch_macos_process(spec: ResumeCommandSpec) -> _PosixSpawnProcess:
             tempfile.mkdtemp(prefix=".aiphetamine-exec-", dir="/private/tmp")
         )
         staged_executable = staging_dir / "claude"
-        _copy_executable_snapshot(executable_fd, staged_executable)
+        staged_digest = _copy_executable_snapshot(executable_fd, staged_executable)
         staged_fd = open_verified_executable(staged_executable)
         try:
             _assert_path_matches_descriptor(
@@ -264,27 +316,25 @@ def _launch_macos_process(spec: ResumeCommandSpec) -> _PosixSpawnProcess:
         finally:
             os.close(staged_fd)
 
-        launch_path = staged_executable
-        launch_args = (str(staged_executable), *spec.args[1:])
-        if config_fd >= 0:
-            config_stat = os.fstat(config_fd)
-            project_stat = os.fstat(cwd_fd)
-            launch_path = Path(sys.executable)
-            launch_args = (
-                str(launch_path),
-                "-I",
-                "-S",
-                "-c",
-                _CHILD_BOUNDARY_CHECK,
-                str(environment["CLAUDE_CONFIG_DIR"]),
-                str(config_stat.st_dev),
-                str(config_stat.st_ino),
-                str(spec.cwd),
-                str(project_stat.st_dev),
-                str(project_stat.st_ino),
-                str(staged_executable),
-                *spec.args[1:],
-            )
+        config_stat = os.fstat(config_fd) if config_fd >= 0 else None
+        project_stat = os.fstat(cwd_fd)
+        launch_path = Path(sys.executable)
+        launch_args = (
+            str(launch_path),
+            "-I",
+            "-S",
+            "-c",
+            _CHILD_BOUNDARY_CHECK,
+            str(environment["CLAUDE_CONFIG_DIR"]) if config_stat is not None else "",
+            str(config_stat.st_dev) if config_stat is not None else "-1",
+            str(config_stat.st_ino) if config_stat is not None else "-1",
+            str(spec.cwd),
+            str(project_stat.st_dev),
+            str(project_stat.st_ino),
+            str(staged_executable),
+            staged_digest,
+            *spec.args[1:],
+        )
 
         null_fd = os.open(
             "/dev/null",
@@ -335,10 +385,7 @@ def _launch_macos_process(spec: ResumeCommandSpec) -> _PosixSpawnProcess:
             raise OSError(result, os.strerror(result))
         def cleanup_staging() -> None:
             if staged_executable is not None:
-                try:
-                    staged_executable.unlink()
-                except OSError:
-                    pass
+                _remove_executable_snapshot(staged_executable)
             if staging_dir is not None:
                 try:
                     staging_dir.rmdir()
@@ -378,10 +425,7 @@ def _launch_macos_process(spec: ResumeCommandSpec) -> _PosixSpawnProcess:
                 os.close(descriptor)
         if not keep_staging_until_wait:
             if staged_executable is not None:
-                try:
-                    staged_executable.unlink()
-                except OSError:
-                    pass
+                _remove_executable_snapshot(staged_executable)
             if staging_dir is not None:
                 try:
                     staging_dir.rmdir()

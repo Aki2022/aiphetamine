@@ -207,6 +207,43 @@ class RuntimeCoreTests(unittest.TestCase):
             self.assertEqual(process.wait(), 0)
 
     @unittest.skipUnless(sys.platform == "darwin", "requires macOS native spawn")
+    def test_macos_child_verifier_rejects_mutated_staging_snapshot(self):
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as temp_dir:
+            root = Path(temp_dir)
+            executable = root / "claude"
+            executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            executable.chmod(0o700)
+            config = root / "config"
+            config.mkdir(mode=0o700)
+            spec = build_resume_spec(
+                executable,
+                ResumeRequest("safe", root),
+                config_dir=config,
+            )
+            original_assert = executor_module._assert_path_matches_descriptor
+            mutated = False
+
+            def mutate_staging_after_check(path, descriptor, *, label):
+                nonlocal mutated
+                original_assert(path, descriptor, label=label)
+                if label == "staged_executable" and not mutated:
+                    os.chflags(path, 0, follow_symlinks=False)
+                    path.chmod(0o700)
+                    path.write_text("#!/bin/sh\nexit 91\n", encoding="utf-8")
+                    path.chmod(0o500)
+                    mutated = True
+
+            with mock.patch.object(
+                executor_module,
+                "_assert_path_matches_descriptor",
+                mutate_staging_after_check,
+            ):
+                process = ClaudeResumeExecutor._launch_process(spec)
+
+            self.assertTrue(mutated)
+            self.assertEqual(process.wait(), 125)
+
+    @unittest.skipUnless(sys.platform == "darwin", "requires macOS native spawn")
     def test_macos_launch_rejects_project_replacement_after_identity_check(self):
         with tempfile.TemporaryDirectory(dir="/private/tmp") as temp_dir:
             root = Path(temp_dir)
