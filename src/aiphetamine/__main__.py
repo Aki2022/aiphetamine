@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
-import re
-import subprocess
 from threading import Thread, Timer
 
 from .app_runtime import ApplicationRuntime
@@ -24,18 +22,20 @@ def main() -> int:
         return 2
     AppKit.NSApplication.sharedApplication()
     data_root = Path.home() / ".local" / "share" / "aiphetamine"
-    account_roots = (("main", Path.home() / ".claude"), ("alias", _claude2_config_root()))
+    main_config_root = Path.home() / ".claude"
+    alias_config_root = _claude2_config_root()
+    account_roots = (("main", main_config_root), ("alias", alias_config_root))
     runtime = ApplicationRuntime(data_root, session_metadata=SessionMetadataResolver(account_roots))
     runtime.startup(datetime.now().astimezone())
     claude_path = load_claude_executable(data_root / "config.json")
     if claude_path is None:
         resume_executor = DisabledResumeExecutor()
     else:
+        account_configs = {"main": (claude_path, main_config_root)}
+        if alias_config_root.is_dir() and not alias_config_root.is_symlink():
+            account_configs["alias"] = (claude_path, alias_config_root)
         resume_executor = AccountRoutedResumeExecutor(
-            {
-                "main": (claude_path, Path.home() / ".claude"),
-                "alias": (claude_path, _claude2_config_root()),
-            }
+            account_configs
         )
     adapter = AppKitMenuBarAdapter(MenuController(runtime, clock=lambda: datetime.now().astimezone()))
     adapter.start()
@@ -60,25 +60,9 @@ class _ThreadingTimerFactory:
         return timer
 
 
-def _claude2_config_root() -> Path:
-    """Read the configured second-account root without retaining shell output."""
-    try:
-        result = subprocess.run(
-            ["zsh", "-xic", "claude2 --version >/dev/null"],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=3,
-            check=False,
-        )
-        match = re.search(r"CLAUDE_CONFIG_DIR=([^\\s]+)", result.stderr)
-        path = Path(match.group(1).strip("'\"")) if match else Path()
-        if result.returncode == 0 and path.is_absolute() and path.is_dir() and not path.is_symlink():
-            return path
-    except (OSError, subprocess.TimeoutExpired):
-        pass
-    return Path.home() / ".claude-seat2"
+def _claude2_config_root(home: Path | None = None) -> Path:
+    """Return the explicit second-account config root without running a shell."""
+    return (home or Path.home()) / ".claude-seat2"
 
 
 if __name__ == "__main__":

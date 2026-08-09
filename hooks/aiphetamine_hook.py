@@ -18,9 +18,14 @@ from aiphetamine.domain import session_key
 
 
 UTC = timezone.utc
+_ALLOWED_ACCOUNT_NAMES = frozenset(("main", "alias"))
 
 
 def apply_event(payload: dict[str, Any], event: str, data_root: Path, now: datetime, account_name: str | None = None) -> str:
+    if account_name is not None and (
+        not isinstance(account_name, str) or account_name not in _ALLOWED_ACCOUNT_NAMES
+    ):
+        return "invalid_account_name"
     session_id = payload.get("session_id")
     cwd = payload.get("cwd")
     if not isinstance(session_id, str) or not session_id or not isinstance(cwd, str):
@@ -58,8 +63,8 @@ def apply_event(payload: dict[str, Any], event: str, data_root: Path, now: datet
         for field in ("session_name", "project_name"):
             if isinstance(payload.get(field), str):
                 record[field] = payload[field]
-    if isinstance(account_name, str) and account_name.strip():
-        record["account_name"] = account_name.strip()
+    if account_name is not None:
+        record["account_name"] = account_name
     try:
         _atomic_write(directory / f"{key}.json", record)
     except OSError:

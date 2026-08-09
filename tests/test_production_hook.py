@@ -49,6 +49,17 @@ class ProductionHookTests(unittest.TestCase):
             )
             self.assertTrue((root / "candidates" / f"{key}.json").exists())
 
+    def test_hook_rejects_unallowlisted_account_name(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            payload = {"session_id": "session-invalid-account", "cwd": str(root)}
+            now = datetime(2026, 7, 21, 12, tzinfo=UTC)
+
+            self.assertEqual(
+                apply_event(payload, "SessionStart", root, now, "main; touch /tmp/marker"),
+                "invalid_account_name",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

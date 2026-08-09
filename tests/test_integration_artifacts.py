@@ -37,6 +37,16 @@ class IntegrationArtifactTests(unittest.TestCase):
         self.assertIn("StopFailure", fragment["hooks"])
         self.assertNotIn("existing", encoded.lower())
 
+    def test_hook_fragment_rejects_untrusted_account_name(self):
+        with self.assertRaisesRegex(ValueError, "invalid_account_name"):
+            build_hook_settings_fragment("python3 /safe/aiphetamine_hook.py", "main; touch /tmp/marker")
+
+    def test_hook_fragment_accepts_only_allowlisted_account_names(self):
+        fragment = build_hook_settings_fragment("python3 /safe/aiphetamine_hook.py", "alias")
+        command = fragment["hooks"]["SessionStart"][0]["hooks"][0]["command"]
+
+        self.assertTrue(command.endswith("--account-name alias"))
+
 
 if __name__ == "__main__":
     unittest.main()

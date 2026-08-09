@@ -19,7 +19,7 @@ The menu also shows the most recent poll boundary and aggregate outcome counts, 
 
 It schedules only the next even-hour poll and runs polls outside the menu thread. With the validated executable configuration, polls use the account-routed Claude executor; if configuration validation fails, the runtime falls back to a disabled executor.
 
-Resume requests carry the account label from the rate-limit event or its matching candidate. The live executor routes `main` and `alias` through separate `CLAUDE_CONFIG_DIR` values and refuses an unknown or conflicting account. Live account-routed execution is enabled only for sessions explicitly selected in the menu. Claude is invoked with `-p --resume`, so the work continues in the background; an existing interactive Claude window is not opened or changed by the poll.
+Resume requests carry the account label from the rate-limit event or its matching candidate. The live executor routes `main` through `~/.claude` and `alias` through the explicit `~/.claude-seat2` path; it refuses an unknown or conflicting account. Live account-routed execution is enabled only for sessions explicitly selected in the menu. Claude is invoked with `-p --resume`, so the work continues in the background; an existing interactive Claude window is not opened or changed by the poll.
 
 When a rate-limit event exists without a candidate snapshot, the runtime reconstructs a selectable candidate from the event. This covers Claude flows that emit `SessionEnd` after `StopFailure`; the event remains the authoritative trigger while the candidate supplies the menu selection boundary.
 

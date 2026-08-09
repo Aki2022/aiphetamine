@@ -55,7 +55,8 @@ python3 scripts/run_dry_cycle.py
 ```
 
 The dry-run command reads local AIphetamine state and prints only sanitized
-counts. It does not launch Claude, modify settings, or persist selection state.
+counts. It does not launch Claude, modify settings, or persist selection state;
+it may create or update the local operational log directory.
 
 ## Hook setup
 
@@ -69,8 +70,9 @@ python3 scripts/generate_hook_config.py \
 ```
 
 Review the generated JSON and merge it manually into the intended Claude Code
-settings file. For a second isolated account, generate a separate fragment
-with `--account-name alias` and use that account's `CLAUDE_CONFIG_DIR`.
+settings file. `--account-name` accepts only `main` or `alias`. For the second
+isolated account, generate a separate fragment with `--account-name alias` and
+use `~/.claude-seat2` as that account's `CLAUDE_CONFIG_DIR`.
 
 See [docs/guides/hook-setup.md](docs/guides/hook-setup.md) for the safety
 boundary and removal procedure. The generator never edits existing settings.
@@ -91,8 +93,10 @@ install or modify unrelated LaunchAgents.
 ## Data and privacy
 
 By default, local runtime data is kept under
-`~/.local/share/aiphetamine/`. Candidate and rate-limit records contain only
-the fields required for local eligibility and account routing. The runtime
+`~/.local/share/aiphetamine/`. Candidate and rate-limit records contain the
+session ID, absolute project path, optional display names, and the allowlisted
+account label needed for local eligibility and account routing. Operational
+logs are sanitized and do not contain those raw record values. The runtime
 does not intentionally persist prompts, transcripts, authentication values,
 or Claude process output.
 
