@@ -21,6 +21,10 @@ It schedules only the next even-hour poll and runs polls outside the menu thread
 
 Resume requests carry the account label from both the rate-limit event and its matching candidate. The labels must be present and equal; an unlabeled or conflicting pair is refused. The live executor routes `main` through `~/.claude` and `alias` through the explicit `~/.claude-seat2` path; it refuses an unknown or conflicting account. Live account-routed execution is enabled only for sessions explicitly selected in the menu. Claude is invoked with `-p --resume`, so the work continues in the background; an existing interactive Claude window is not opened or changed by the poll.
 
+The in-memory check state is scoped by both session ID and account label. A
+transcript lookup may add a title or repository display name, but it never
+converts an unlabeled candidate into an account-authorized candidate.
+
 When a rate-limit event exists without a candidate snapshot, the runtime reconstructs a selectable candidate from the event only when the event has a known account label. This covers Claude flows that emit `SessionEnd` after `StopFailure`; the event remains the authoritative trigger while the candidate supplies the menu selection boundary. Unlabeled legacy events are kept for inspection but cannot be selected for automatic resume.
 
 ## Configuration Boundary

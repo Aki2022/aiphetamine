@@ -307,6 +307,7 @@ stdout/stderrは取得・保存しないため、結果モデルへ追加しな�
 @dataclass(frozen=True)
 class SessionActivation:
     session_id: str
+    account_name: str | None
     activated_at: datetime
     expires_at: datetime
     resolved_project_path: Path
@@ -326,8 +327,8 @@ JSONは「rate limitに到達した」という単発イベントである。
 
 候補発見記録とrate limitイベントは、寿命と操作が異なるため用途別ディレクトリへ分離する。さらに、アカウント別のsession IDが同じファイル名を共有しないよう、`main`、`alias`、`unknown`のスコープへ分離する。
 
-- `candidates/`: session_idごとの最新候補記録。起動時に読み込むが、有効化状態や期限は保存しない
-- `rate_limits/`: rate limit到達を表す単発イベント。claim、complete、restore、起動時の鮮度付きcleanupの対象
+- `candidates/{main,alias,unknown}/`: アカウントスコープごとの最新候補記録。起動時に読み込むが、有効化状態や期限は保存しない
+- `rate_limits/{main,alias,unknown}/`: rate limit到達を表す単発イベント。claim、complete、restore、起動時の鮮度付きcleanupの対象
 - `unknown/`: アカウントラベルを持たない既存Hook記録の隔離先。表示はできても自動resume対象にはしない
 
 旧形式の用途別ディレクトリ直下にあるJSONは、移行期間の読み取り対象として扱う。ただし、旧形式にアカウントラベルがあっても共有namespaceのため自動resume対象にはしない。新規Hook書き込みは必ずアカウントスコープへ行う。
@@ -381,6 +382,9 @@ JSONは「rate limitに到達した」という単発イベントである。
 同じsession IDが複数のアカウントのmetadataに存在する場合は、アカウントを
 一意に決定できないため表示・resume対象から除外する。明示された
 `account_name`がある場合は、そのアカウントのmetadataだけを参照する。
+metadataから補ったタイトルやrepository名は表示専用であり、欠落した
+`account_name`を補完しない。SelectionStoreのキーは
+`(session_id, account_name)`とし、一方のアカウントでの選択を他方へ引き継がない。
 
 ## 8.4 バリデーション
 
@@ -437,7 +441,7 @@ AIphetamine本体はClaudeの出力を直接監視しない。
 候補発見Hookの出力先:
 
 ```text
-~/.local/share/aiphetamine/candidates/<session_key>.json
+~/.local/share/aiphetamine/candidates/{main,alias,unknown}/<session_key>.json
 ```
 
 `session_key`はUTF-8のsession_idをSHA-256でハッシュ化した64桁の小文字16進文字列とする。同じsession_idが既に存在する場合は、最新候補情報として原子的に上書きする。
@@ -445,19 +449,19 @@ AIphetamine本体はClaudeの出力を直接監視しない。
 rate limit Hookの出力先:
 
 ```text
-~/.local/share/aiphetamine/rate_limits/<session_key>.json
+~/.local/share/aiphetamine/rate_limits/{main,alias,unknown}/<session_key>.json
 ```
 
-同じsession_idが既に存在する場合は上書きする。
+同じアカウントスコープの同じsession_idが既に存在する場合は、最新候補として原子的に上書きする。アカウントをまたぐ同一session_idは曖昧として除外する。
 
-セッション終了Hookは、対応する`candidates/<session_key>.json`を直接かつ冪等に削除する。ファイルが既に存在しない場合も成功扱いとする。アプリ停止中も同じ処理を行う。
+セッション終了Hookは、対応する`candidates/{main,alias,unknown}/<session_key>.json`を直接かつ冪等に削除する。ファイルが既に存在しない場合も成功扱いとする。アプリ停止中も同じ処理を行う。
 
 RepositoryはJSON内部のsession_idからsession_keyを再計算し、ファイル名と一致しない記録を不正として処理対象から除外する。
 
 ## 9.4 原子的書き込み
 
 ```text
-<session_key>.json.tmp.<pid>
+<scope>/<session_key>.json.tmp.<pid>
 → flush
 → file fsync
 → os.replace(<session_key>.json)
@@ -466,7 +470,7 @@ RepositoryはJSON内部のsession_idからsession_keyを再計算し、ファイ
 
 一時ファイルは保存先と同じディレクトリへ`0600`で作成し、同一ファイルシステム上の`os.replace`を利用する。途中で失敗した一時ファイルは通常処理対象にせず、rate limit側は次回起動時cleanup対象とする。
 
-候補削除時は対象ファイルをunlinkした後、`candidates/`ディレクトリを`fsync`する。ファイル不在は成功扱いとする。
+候補削除時は対象ファイルをunlinkした後、対象スコープディレクトリを`fsync`する。ファイル不在は成功扱いとする。
 
 ## 9.5 Hookエラー
 
@@ -681,7 +685,7 @@ def run_poll_cycle() -> None:
     events = repository.list_events()
 
     for event in events:
-        if not selection_store.is_selected(event.session_id):
+        if not selection_store.is_selected(event.session_id, event.account_name):
             continue
 
         if processing_registry.contains(event.session_id):
@@ -841,7 +845,7 @@ WAITING
 WAITING条件:
 
 ```text
-選択済みsession_idに対応する有効JSONが1件以上存在
+選択済み`(session_id, account_name)`に対応する有効JSONが1件以上存在
 ```
 
 ## 16. LaunchAgentManager
@@ -947,10 +951,10 @@ Create data directories
 Acquire exclusive instance.lock
         │
         ▼
-Delete stale rate_limits/*.json/.processing/.tmp
+Delete stale rate_limits/{main,alias,unknown}/*.json/.processing/.tmp
         │
         ▼
-Load fresh candidates/*.json snapshots
+Load fresh candidates/{main,alias,unknown}/*.json snapshots
         │
         ▼
 Clear in-memory activations and expiry state
@@ -982,7 +986,7 @@ StopFailure(rate_limit) Hook
     │
     │ atomic write
     ▼
-<session_id>.json
+<account-scope>/<session_key>.json
     │
     ▼
 UI watcher detects JSON
@@ -1079,9 +1083,9 @@ Hookの原子的書き込みで防止する。
 
 ## 22.4 同一session_idの複数ファイル
 
-ファイル名をsession_id固定にし、Hook側で上書きする。
-
-異常に複数存在する場合は、`updated_at`が新しいものを採用し、他をログする。
+アカウントスコープをまたいで同じsession_idが複数存在する場合は、Repositoryが
+任意のwinnerを選ばず、すべてresume対象外として除外する。異なるスコープへの
+選択状態の引き継ぎも行わない。
 
 ## 22.5 project_path削除
 

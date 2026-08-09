@@ -16,7 +16,8 @@ related_specs:
 Generate a JSON settings fragment with `python3 scripts/generate_hook_config.py --hook-command '<command>' [--account-name main|alias]`. Review the resulting fragment and merge it manually with the intended Claude Code settings file. The account value is allowlisted to `main` or `alias`; unknown values are rejected.
 
 The generator parses the command into argv tokens, rejects shell metacharacters,
-newlines, and shell environment-assignment words such as `PATH=/tmp/evil`, and
+newlines, and shell environment-assignment words such as `PATH=/tmp/evil` or
+`PATH+=:/tmp/evil`, and
 quotes the normalized tokens before adding Hook arguments.
 Use a direct executable plus its fixed arguments; do not pass shell pipelines,
 command substitutions, or other shell syntax.

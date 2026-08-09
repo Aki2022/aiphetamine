@@ -87,6 +87,28 @@ class SessionMetadataTests(unittest.TestCase):
             self.assertEqual(enriched.account_name, "alias")
             self.assertEqual(enriched.session_name, "alias account")
 
+    def test_unlabeled_candidate_stays_unlabeled_after_metadata_lookup(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            projects = root / "projects"
+            projects.mkdir()
+            session_id = "unlabeled-session"
+            (projects / f"{session_id}.jsonl").write_text(
+                json.dumps({"customTitle": "Unlabeled session"}) + "\n", encoding="utf-8"
+            )
+            candidate = CandidateSession(
+                1,
+                "candidate",
+                session_id,
+                root,
+                datetime(2026, 7, 21, 12, tzinfo=UTC),
+            )
+
+            enriched = SessionMetadataResolver((("main", root),)).enrich(candidate)
+
+            self.assertIsNone(enriched.account_name)
+            self.assertEqual(enriched.session_name, "Unlabeled session")
+
 
 if __name__ == "__main__":
     unittest.main()

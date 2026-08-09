@@ -27,10 +27,13 @@ class SessionMetadataResolver:
             account_roots = tuple(
                 (label, root) for label, root in account_roots if label == candidate.account_name
             )
-        detected_account, session_name = self._session_label(candidate.session_id, account_roots)
+        _detected_account, session_name = self._session_label(candidate.session_id, account_roots)
         return replace(
             candidate,
-            account_name=candidate.account_name or detected_account,
+            # Account identity must come from the Hook/repository record.  The
+            # Claude transcript tree is presentation metadata only; inferring a
+            # label here would turn an unlabeled candidate into a resumable one.
+            account_name=candidate.account_name,
             session_name=candidate.session_name or session_name,
             project_name=candidate.project_name or _repository_name(candidate.project_path),
         )

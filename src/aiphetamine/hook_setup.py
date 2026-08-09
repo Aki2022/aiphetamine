@@ -8,7 +8,7 @@ import re
 
 _ALLOWED_ACCOUNT_NAMES = frozenset(("main", "alias"))
 _SHELL_METACHARACTERS = frozenset(";&|<>$`\n\r\x00")
-_SHELL_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+_SHELL_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\[[^]]*\])?\+?=")
 
 
 def _normalize_hook_command(command: str) -> str:

@@ -9,17 +9,26 @@ from pathlib import Path
 from typing import Callable, Mapping
 
 from .domain import ResumeLaunchResult, ResumeRequest
-from .filesystem_security import is_secure_account_directory, validate_external_executable
+from .filesystem_security import open_private_directory, open_verified_executable
 
 
 @dataclass(frozen=True)
 class ResumeCommandSpec:
     args: tuple[str, ...]
     cwd: Path
-    shell: bool = False
-    start_new_session: bool = True
-    devnull_streams: bool = True
     environment: Mapping[str, str] | None = None
+
+    @property
+    def shell(self) -> bool:
+        return False
+
+    @property
+    def start_new_session(self) -> bool:
+        return True
+
+    @property
+    def devnull_streams(self) -> bool:
+        return True
 
 
 def build_resume_spec(
@@ -66,22 +75,43 @@ class ClaudeResumeExecutor:
 
     @staticmethod
     def _launch_process(spec: ResumeCommandSpec) -> subprocess.Popen[bytes]:
-        if not spec.args or not validate_external_executable(Path(spec.args[0])):
+        if not spec.args:
             raise OSError("unsafe_executable")
-        if spec.environment is not None:
-            config_dir = spec.environment.get("CLAUDE_CONFIG_DIR")
-            if config_dir is None or not is_secure_account_directory(Path(config_dir)):
-                raise OSError("unsafe_account_directory")
-        return subprocess.Popen(
-            list(spec.args),
-            cwd=str(spec.cwd),
-            shell=spec.shell,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=spec.start_new_session,
-            env=dict(spec.environment) if spec.environment is not None else None,
-        )
+        if not os.path.isdir("/dev/fd"):
+            raise OSError("fd_exec_unavailable")
+        executable_fd = -1
+        config_fd = -1
+        try:
+            executable_fd = open_verified_executable(Path(spec.args[0]))
+            args = list(spec.args)
+            args[0] = f"/dev/fd/{executable_fd}"
+            environment = dict(spec.environment) if spec.environment is not None else None
+            pass_fds = [executable_fd]
+            if environment is not None:
+                config_dir = environment.get("CLAUDE_CONFIG_DIR")
+                if config_dir is None:
+                    raise OSError("unsafe_account_directory")
+                config_fd = open_private_directory(Path(config_dir))
+                environment["CLAUDE_CONFIG_DIR"] = f"/dev/fd/{config_fd}"
+                pass_fds.append(config_fd)
+            for descriptor in pass_fds:
+                os.set_inheritable(descriptor, True)
+            return subprocess.Popen(
+                args,
+                cwd=str(spec.cwd),
+                shell=False,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+                env=environment,
+                pass_fds=tuple(pass_fds),
+            )
+        finally:
+            if config_fd >= 0:
+                os.close(config_fd)
+            if executable_fd >= 0:
+                os.close(executable_fd)
 
 
 class AccountRoutedResumeExecutor:

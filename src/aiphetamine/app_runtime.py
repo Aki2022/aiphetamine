@@ -10,6 +10,7 @@ from typing import Any
 
 from .domain import CandidateSession
 from .filesystem_security import ensure_private_directory
+from .instance_lock import InstanceLock
 from .repositories import CandidateRepository, RateLimitEventRepository
 from .resume_service import RuntimePollCycle
 from .runtime_logging import SanitizedLogger
@@ -65,6 +66,7 @@ class ApplicationRuntime:
         self.rate_limits_root = data_root / "rate_limits"
         self.logs_root = data_root / "logs"
         ensure_private_directory(self.data_root)
+        self._instance_lock = InstanceLock(self.data_root)
         self.selection_store = InMemorySelectionStore()
         self._logger = SanitizedLogger(self.logs_root, salt=log_salt)
         self._session_metadata = session_metadata
@@ -123,8 +125,8 @@ class ApplicationRuntime:
             raise LookupError("candidate not available")
         self.selection_store.activate(candidate, now)
 
-    def deactivate(self, session_id: str) -> None:
-        self.selection_store.deactivate(session_id)
+    def deactivate(self, session_id: str, account_name: str | None = None) -> None:
+        self.selection_store.deactivate(session_id, account_name)
 
     def run_poll(self, now: datetime, executor: object):
         self._logger.record(component="resume_service", event="poll_started")
@@ -150,6 +152,15 @@ class ApplicationRuntime:
 
     def close(self) -> None:
         self._logger.close()
+        self._instance_lock.close()
+
+    def __del__(self):
+        try:
+            lock = getattr(self, "_instance_lock", None)
+            if lock is not None:
+                lock.close()
+        except Exception:
+            pass
 
     def dry_run(self, now: datetime) -> DryRunReport:
         cycle = RuntimePollCycle(

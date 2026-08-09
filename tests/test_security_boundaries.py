@@ -11,8 +11,13 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))
 
 from aiphetamine.app_runtime import ApplicationRuntime
-from aiphetamine.domain import session_key
-from aiphetamine.filesystem_security import is_secure_account_directory, validate_external_executable
+from aiphetamine.domain import CandidateSession, RateLimitEvent, session_key
+from aiphetamine.filesystem_security import (
+    is_secure_account_directory,
+    read_private_text,
+    validate_external_executable,
+)
+from aiphetamine.instance_lock import InstanceLock
 from aiphetamine.launch_agent import LaunchAgentManager, LaunchAgentSpec
 from aiphetamine.repositories import CandidateRepository, RateLimitEventRepository
 from aiphetamine.resume import evaluate_resume
@@ -264,6 +269,42 @@ class SecurityBoundaryTests(unittest.TestCase):
             decision = evaluate_resume(event, {candidate.session_id: candidate}, store, now)
 
             self.assertEqual(decision.status, "account_unknown")
+
+    def test_selection_is_scoped_to_account(self):
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as temp_dir:
+            root = Path(temp_dir)
+            now = datetime(2026, 7, 21, 12, tzinfo=UTC)
+            session_id = "account-scoped-selection"
+            main = CandidateSession(1, "candidate", session_id, root, now, account_name="main")
+            alias = CandidateSession(1, "candidate", session_id, root, now, account_name="alias")
+            event = RateLimitEvent(1, "rate_limit", "rate_limit", session_id, root, now, account_name="alias")
+            store = InMemorySelectionStore()
+            store.activate(main, now)
+
+            self.assertEqual(evaluate_resume(event, {session_id: alias}, store, now).status, "unselected")
+
+            store.activate(alias, now)
+            self.assertFalse(store.is_selected(session_id, "main"))
+            self.assertTrue(store.is_selected(session_id, "alias"))
+
+    def test_instance_lock_allows_only_one_runtime(self):
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as temp_dir:
+            root = Path(temp_dir)
+            first = InstanceLock(root)
+            try:
+                with self.assertRaisesRegex(RuntimeError, "instance_already_running"):
+                    InstanceLock(root)
+            finally:
+                first.close()
+
+    def test_private_text_rejects_fifo_without_blocking(self):
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as temp_dir:
+            path = Path(temp_dir) / "not-a-file"
+            import os
+
+            os.mkfifo(path, 0o600)
+            with self.assertRaises(OSError):
+                read_private_text(path)
 
 
 if __name__ == "__main__":

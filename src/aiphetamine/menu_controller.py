@@ -16,7 +16,7 @@ class MenuRuntime(Protocol):
 
     def activate(self, session_id: str, now: datetime) -> None: ...
 
-    def deactivate(self, session_id: str) -> None: ...
+    def deactivate(self, session_id: str, account_name: str | None = None) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -50,8 +50,13 @@ class MenuController:
 
     def toggle(self, session_id: str) -> MenuState:
         now = self._clock()
-        if self._runtime.selection_store.is_selected(session_id):
-            self._runtime.deactivate(session_id)
+        candidate = next(
+            (candidate for candidate in self._runtime.candidates(now) if candidate.session_id == session_id),
+            None,
+        )
+        account_name = candidate.account_name if candidate is not None else None
+        if self._runtime.selection_store.is_selected(session_id, account_name):
+            self._runtime.deactivate(session_id, account_name)
         else:
             self._runtime.activate(session_id, now)
         return self.refresh()

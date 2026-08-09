@@ -127,18 +127,28 @@ def ensure_private_file(path: Path) -> None:
     """Validate an existing managed file without following a symlink."""
 
     path = _absolute(path)
-    _check_no_symlink_components(path)
+    parent_fd = _open_trusted_directory(path.parent, leaf_owner_current=True)
+    descriptor = -1
     try:
-        st = os.stat(path, follow_symlinks=False)
-    except FileNotFoundError:
-        return
-    if not stat.S_ISREG(st.st_mode) or not _owner_is_trusted(st, allow_root_owner=False):
-        raise OSError("unsafe_file")
-    if stat.S_IMODE(st.st_mode) != 0o600:
-        os.chmod(path, 0o600)
-    st = os.stat(path, follow_symlinks=False)
-    if stat.S_IMODE(st.st_mode) != 0o600:
-        raise OSError("unsafe_file_permissions")
+        flags = os.O_RDWR | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+        try:
+            descriptor = os.open(path.name, flags, dir_fd=parent_fd)
+        except FileNotFoundError:
+            return
+        file_stat = os.fstat(descriptor)
+        if not stat.S_ISREG(file_stat.st_mode) or not _owner_is_trusted(
+            file_stat, allow_root_owner=False
+        ):
+            raise OSError("unsafe_file")
+        if stat.S_IMODE(file_stat.st_mode) != 0o600:
+            os.fchmod(descriptor, 0o600)
+        file_stat = os.fstat(descriptor)
+        if stat.S_IMODE(file_stat.st_mode) != 0o600:
+            raise OSError("unsafe_file_permissions")
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        os.close(parent_fd)
 
 
 def read_private_text(path: Path) -> str:
@@ -148,8 +158,18 @@ def read_private_text(path: Path) -> str:
     parent_fd = _open_trusted_directory(path.parent, leaf_owner_current=True)
     descriptor = -1
     try:
-        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+        flags = (
+            os.O_RDONLY
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_NONBLOCK", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+        )
         descriptor = os.open(path.name, flags, dir_fd=parent_fd)
+        file_stat = os.fstat(descriptor)
+        if not stat.S_ISREG(file_stat.st_mode) or not _owner_is_trusted(
+            file_stat, allow_root_owner=False
+        ) or stat.S_IMODE(file_stat.st_mode) & 0o022:
+            raise OSError("unsafe_file")
         with os.fdopen(descriptor, "r", encoding="utf-8") as stream:
             descriptor = -1
             return stream.read()
@@ -162,22 +182,32 @@ def read_private_text(path: Path) -> str:
 def validate_external_executable(path: Path) -> bool:
     """Validate an executable and every non-writable ancestor directory."""
 
+    descriptor = -1
+    try:
+        descriptor = open_verified_executable(path)
+    except OSError:
+        return False
+    os.close(descriptor)
+    return True
+
+
+def open_verified_executable(path: Path) -> int:
+    """Open and validate an executable, keeping the checked file stable."""
+
     path = _absolute(path)
+    parent_fd = _open_trusted_directory(path.parent, leaf_owner_current=False)
     try:
-        parent_fd = _open_trusted_directory(path.parent, leaf_owner_current=False)
-    except OSError:
-        return False
-    try:
-        st = os.stat(path.name, dir_fd=parent_fd, follow_symlinks=False)
-    except OSError:
-        os.close(parent_fd)
-        return False
-    try:
-        return (
-            stat.S_ISREG(st.st_mode)
-            and _owner_is_trusted(st, allow_root_owner=True)
-            and bool(st.st_mode & 0o111)
-        )
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+        descriptor = os.open(path.name, flags, dir_fd=parent_fd)
+        file_stat = os.fstat(descriptor)
+        if not (
+            stat.S_ISREG(file_stat.st_mode)
+            and _owner_is_trusted(file_stat, allow_root_owner=True)
+            and bool(file_stat.st_mode & 0o111)
+        ):
+            os.close(descriptor)
+            raise OSError("unsafe_executable")
+        return descriptor
     finally:
         os.close(parent_fd)
 
@@ -232,6 +262,7 @@ def atomic_write_bytes(target: Path, payload: bytes) -> None:
             src_dir_fd=parent_fd,
             dst_dir_fd=parent_fd,
         )
+        os.fsync(parent_fd)
         temporary_name = None
         replaced = os.stat(target.name, dir_fd=parent_fd, follow_symlinks=False)
         if not stat.S_ISREG(replaced.st_mode) or stat.S_IMODE(replaced.st_mode) != 0o600:
@@ -253,7 +284,13 @@ def secure_unlink(path: Path) -> None:
     path = _absolute(path)
     parent_fd = _open_trusted_directory(path.parent, leaf_owner_current=True)
     try:
+        entry_stat = os.stat(path.name, dir_fd=parent_fd, follow_symlinks=False)
+        if not stat.S_ISREG(entry_stat.st_mode) or not _owner_is_trusted(
+            entry_stat, allow_root_owner=False
+        ):
+            raise OSError("unsafe_file")
         os.unlink(path.name, dir_fd=parent_fd)
+        os.fsync(parent_fd)
     finally:
         os.close(parent_fd)
 
@@ -272,11 +309,21 @@ def secure_replace(source: Path, destination: Path) -> None:
             source_stat, allow_root_owner=False
         ):
             raise OSError("unsafe_file")
+        try:
+            destination_stat = os.stat(destination.name, dir_fd=parent_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            destination_stat = None
+        if destination_stat is not None and (
+            not stat.S_ISREG(destination_stat.st_mode)
+            or not _owner_is_trusted(destination_stat, allow_root_owner=False)
+        ):
+            raise OSError("unsafe_destination")
         os.replace(
             source.name,
             destination.name,
             src_dir_fd=parent_fd,
             dst_dir_fd=parent_fd,
         )
+        os.fsync(parent_fd)
     finally:
         os.close(parent_fd)

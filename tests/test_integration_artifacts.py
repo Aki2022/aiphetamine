@@ -62,6 +62,7 @@ class IntegrationArtifactTests(unittest.TestCase):
             "python3 /safe/hook.py $(touch /tmp/marker)",
             "python3 /safe/hook.py `touch /tmp/marker`",
             "PATH=/tmp/evil python3 /safe/hook.py",
+            "PATH+=:/tmp/evil python3 /safe/hook.py",
         ):
             with self.subTest(unsafe=unsafe), self.assertRaisesRegex(ValueError, "invalid_hook_command"):
                 build_hook_settings_fragment(unsafe)

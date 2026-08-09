@@ -116,9 +116,9 @@ class MenuModelTests(unittest.TestCase):
                     self.calls.append(("activate", session_id))
                     self.selection_store.activate(candidate, now)
 
-                def deactivate(self, session_id):
+                def deactivate(self, session_id, account_name=None):
                     self.calls.append(("deactivate", session_id))
-                    self.selection_store.deactivate(session_id)
+                    self.selection_store.deactivate(session_id, account_name)
 
             runtime = FakeRuntime()
             controller = MenuController(runtime, clock=lambda: candidate.updated_at)

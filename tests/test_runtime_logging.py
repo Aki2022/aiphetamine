@@ -52,6 +52,15 @@ class RuntimeLoggingTests(unittest.TestCase):
 
             logger.close()
 
+    def test_logger_rejects_fifo_log_target(self):
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as temp_dir:
+            import os
+
+            log_root = Path(temp_dir)
+            os.mkfifo(log_root / "aiphetamine.log", 0o600)
+            with self.assertRaises(OSError):
+                SanitizedLogger(log_root, salt=b"test-salt")
+
     def test_runtime_runs_injected_poll_cycle_and_logs_only_safe_events(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

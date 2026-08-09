@@ -17,6 +17,7 @@ class SessionMenuRow:
     title: str
     checked: bool
     status: str = ""
+    account_name: str | None = None
 
 
 def sanitize_menu_text(value: str | None, *, fallback: str) -> str:
@@ -56,7 +57,8 @@ def build_session_rows(
             SessionMenuRow(
                 session_id=candidate.session_id,
                 title=title,
-                checked=selection_store.is_selected(candidate.session_id),
+                checked=selection_store.is_selected(candidate.session_id, candidate.account_name),
+                account_name=candidate.account_name,
             )
         )
     return tuple(rows)

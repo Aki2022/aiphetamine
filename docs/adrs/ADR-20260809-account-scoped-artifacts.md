@@ -38,6 +38,11 @@ Filesystem reads and mutations use no-follow directory descriptors where the
 platform provides them. The executable and account directory are revalidated
 immediately before a real process launch.
 
+The in-memory selection state is keyed by `(session_id, account_name)`;
+selection from one account cannot authorize the same session ID in another
+account. Transcript metadata may supply a human-readable title, but it never
+fills an absent account label.
+
 ## Alternatives Considered
 
 - Keep one flat namespace and trust `account_name`: rejected because identical

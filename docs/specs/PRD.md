@@ -184,7 +184,7 @@ AIphetamine起動時に、以下を実行する。
 2. 各ディレクトリの所有者、権限、symlinkでないことを検証する。
 3. `rate_limits`ディレクトリ内の12時間以内の有効なrate limitイベントは保持し、古い・不正なイベントと`.processing`ファイルを削除する。
 4. 既存の候補発見イベントを候補一覧へ取り込む。
-5. メモリ上の監視対象session_id集合と有効化期限を空にする。
+5. メモリ上の`(session_id, account_name)`集合と有効化期限を空にする。
 6. メニューバーUIを表示する。取り込んだ候補はチェックOFFとする。
 7. 次の2時間境界を計算する。
 8. 起動直後のresume処理は行わず、次の境界時刻まで待つ。
@@ -227,7 +227,7 @@ AIphetamine起動時に、以下を実行する。
 監視ディレクトリ:
 
 ```text
-~/.local/share/aiphetamine/rate_limits/
+~/.local/share/aiphetamine/rate_limits/{main,alias,unknown}/
 ```
 
 Hookは、rate limit到達時に1セッション1ファイルのJSONを作成する。
@@ -235,12 +235,12 @@ Hookは、rate limit到達時に1セッション1ファイルのJSONを作成す
 推奨ファイル名:
 
 ```text
-<session_id>.json
+<account-scope>/<session_key>.json
 ```
 
 AIphetamineはディレクトリ内の`.json`ファイルを検出し、内容を検証して一覧へ反映する。
 
-同一session_idのJSONが再生成された場合、既存の同一セッションとして扱う。
+同一アカウントスコープの同一session_idのJSONが再生成された場合、既存の同一セッションとして扱う。アカウントをまたぐ同一session_idは曖昧として除外する。
 
 rate limitイベントJSONは候補セッションの発見情報や有効化状態の保存先として兼用しない。
 
@@ -279,13 +279,13 @@ rate limitイベントJSONは候補セッションの発見情報や有効化状
 
 - 新規の候補セッションは必ずOFF
 - rate limit到達前でも候補セッションを選択可能
-- ユーザーがチェックしたsession_idをメモリ上の集合に追加
-- ユーザーがチェックを外したsession_idを集合から削除
+- ユーザーがチェックした`(session_id, account_name)`をメモリ上の集合に追加
+- ユーザーがチェックを外した`(session_id, account_name)`を集合から削除
 - 永続化しない
 - アプリ終了時に消失
 - Mac再起動後にも復元しない
 
-JSONが一度削除された後、同じsession_idのJSONが再生成された場合は、アプリ起動中に限り、以前のチェック状態を維持する。
+JSONが一度削除された後、同じ`(session_id, account_name)`のJSONが再生成された場合は、アプリ起動中に限り、以前のチェック状態を維持する。同じsession_idでもアカウントが異なる場合は状態を引き継がない。
 
 明示的なセッション終了Hookを受信した場合は、該当session_idを候補一覧と監視対象集合から削除する。終了を確認できない場合は、一時停止や通知欠落を終了と推測せず、ユーザーがチェックを外すかアプリが終了するまで保持する。
 
@@ -304,7 +304,9 @@ JSONが一度削除された後、同じsession_idのJSONが再生成された�
 - `project_path`が空でない
 - `project_path`が存在する
 - 候補セッションとして記録された`project_path`と一致する
-- session_idがメモリ上の監視対象集合に含まれる
+- `(session_id, account_name)`がメモリ上の監視対象集合に含まれる
+- イベントと候補のallowlisted `account_name`が存在し、一致する
+- メニュー選択が`(session_id, account_name)`単位で有効である
 - 同一session_idが現在処理中でない
 - 対象ファイルが`.json`である
 - `.processing`ではない
@@ -340,9 +342,9 @@ AIphetamineは、元のClaude Codeプロセスへ入力を注入しない。公�
 二重実行を防ぐため、resume前に対象ファイルを原子的にrenameする。
 
 ```text
-<session_id>.json
+<account-scope>/<session_key>.json
 →
-<session_id>.processing
+<account-scope>/<session_key>.processing
 ```
 
 `.processing`ファイルは通常の一覧および巡回対象から除外する。
@@ -396,7 +398,7 @@ rate limitイベントJSONが存在するセッションだけを表示する。
 - ユーザーがアプリを終了した
 - AIphetamine再起動時の初期化で削除した
 
-アプリ起動中の監視対象session_id集合は、JSONが一時的に消えても保持する。ただしUI一覧にはJSONが存在するセッションだけを表示する。
+アプリ起動中の監視対象`(session_id, account_name)`集合は、JSONが一時的に消えても保持する。ただしUI一覧にはJSONが存在するセッションだけを表示する。
 
 ## 8.12 Launch at Login
 
@@ -406,14 +408,9 @@ rate limitイベントJSONが存在するセッションだけを表示する。
 Launch at Login
 ```
 
-ONの場合:
-
-- ユーザー用LaunchAgentを作成・有効化する
-- macOSログイン後にAIphetamineを起動する
-
-OFFの場合:
-
-- AIphetamine用LaunchAgentを無効化または削除する
+ON/OFFのメニュー操作は設定生成の状態だけを扱う。LaunchAgentの登録・解除や
+既存plistの削除は実施せず、生成済みplistを利用者が手動で`launchctl`
+へ登録・解除する。
 
 ログイン起動後も、通常起動と同様に既存JSONを削除し、次の2時間境界まで待つ。
 
@@ -423,7 +420,7 @@ OFFの場合:
 
 終了時:
 
-- 監視対象session_id集合を破棄
+- 監視対象`(session_id, account_name)`集合を破棄
 - スケジューラを停止
 - 実行中のresumeプロセスは強制終了しない
 - JSONは終了時には削除しない
@@ -479,7 +476,7 @@ Hookは途中書き込みされたJSONをAIphetamineが読まないよう、原�
 1. 一時ファイルへ書く
 2. flush
 3. 必要に応じてfsync
-4. `<session_id>.json`へrename
+4. `<account-scope>/<session_key>.json`へrename
 
 ### 9.5 不正JSON
 
@@ -565,7 +562,7 @@ Quit AIphetamine
 - `.processing`削除
 - `.json`復元
 - Launch at Loginの変更
-- 例外とスタックトレース
+- サニタイズしたエラー分類（生の例外とスタックトレースは記録しない）
 
 プロンプト本文、作業内容、resumeプロセスのstdout/stderrは取得・保存しない。固定送信文字列`Continue`はログへ記録してよい。
 
@@ -659,11 +656,11 @@ And MVPの成功判定はresumeプロセスの生成成功である
 Given resumeプロセスが生成できる
 When subprocess起動が成功する
 Then `.processing`は削除される
-And session_idの選択状態はメモリに残る
+And `(session_id, account_name)`の選択状態はメモリに残る
 
 ### AC-07 Hook再生成時に再試行
 
-Given 選択済みsession_idのJSONがresume後に再生成される
+Given 選択済み`(session_id, account_name)`のJSONがresume後に再生成される
 When 次の固定巡回時刻になる
 Then チェックONのまま同じresume処理が再実行される
 

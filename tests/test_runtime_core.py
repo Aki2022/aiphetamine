@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 SOURCE_ROOT = Path(__file__).resolve().parents[1] / "src"
 sys.path.insert(0, str(SOURCE_ROOT))
@@ -60,6 +61,29 @@ class RuntimeCoreTests(unittest.TestCase):
         self.assertEqual(result, ResumeLaunchResult(True, 31415, None))
         self.assertEqual(len(calls), 1)
         self.assertTrue(calls[0].devnull_streams)
+
+    def test_real_process_boundary_forces_no_shell_and_inherits_verified_descriptors(self):
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as temp_dir:
+            root = Path(temp_dir)
+            executable = root / "claude"
+            executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            executable.chmod(0o700)
+            config = root / "config"
+            config.mkdir(mode=0o700)
+            spec = build_resume_spec(
+                executable,
+                ResumeRequest("session-command", root),
+                config_dir=config,
+            )
+            with patch("aiphetamine.executor.subprocess.Popen") as popen:
+                ClaudeResumeExecutor._launch_process(spec)
+
+            kwargs = popen.call_args.kwargs
+            self.assertFalse(kwargs["shell"])
+            self.assertTrue(kwargs["start_new_session"])
+            self.assertTrue(kwargs["pass_fds"])
+            self.assertTrue(kwargs["args"] if "args" in kwargs else popen.call_args.args[0])
+            self.assertTrue(kwargs["env"]["CLAUDE_CONFIG_DIR"].startswith("/dev/fd/"))
 
     def test_account_routed_executor_sets_the_selected_config_directory(self):
         calls = []
