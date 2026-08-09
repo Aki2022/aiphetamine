@@ -7,7 +7,9 @@ import ctypes
 from dataclasses import dataclass
 import os
 from pathlib import Path
+import signal
 import sys
+import tempfile
 from typing import Callable, Mapping
 
 from .domain import ResumeLaunchResult, ResumeRequest
@@ -42,9 +44,10 @@ class ResumeCommandSpec:
 class _PosixSpawnProcess:
     """Small Popen-compatible wait handle for the macOS posix_spawn path."""
 
-    def __init__(self, pid: int) -> None:
+    def __init__(self, pid: int, cleanup: Callable[[], None] | None = None) -> None:
         self.pid = pid
         self._returncode: int | None = None
+        self._cleanup = cleanup
 
     def wait(self) -> int:
         if self._returncode is not None:
@@ -53,6 +56,9 @@ class _PosixSpawnProcess:
             try:
                 _, status = os.waitpid(self.pid, 0)
                 self._returncode = os.waitstatus_to_exitcode(status)
+                if self._cleanup is not None:
+                    self._cleanup()
+                    self._cleanup = None
                 return self._returncode
             except InterruptedError:
                 continue
@@ -124,6 +130,9 @@ def _launch_macos_process(spec: ResumeCommandSpec) -> _PosixSpawnProcess:
     cwd_fd = -1
     config_fd = -1
     null_fd = -1
+    staging_dir: Path | None = None
+    staged_executable: Path | None = None
+    keep_staging_until_wait = False
     actions = void_pointer()
     attributes = void_pointer()
     actions_initialized = False
@@ -158,6 +167,20 @@ def _launch_macos_process(spec: ResumeCommandSpec) -> _PosixSpawnProcess:
                 label="account_directory",
             )
 
+        # Execute a private hardlink to the validated executable. This removes
+        # the original pathname from the exec lookup after the final check;
+        # the original path is still checked again after spawn so an update or
+        # replacement fails closed instead of silently continuing.
+        staging_dir = Path(
+            tempfile.mkdtemp(prefix=".aiphetamine-exec-", dir="/private/tmp")
+        )
+        staged_executable = staging_dir / "claude"
+        os.link(Path(spec.args[0]), staged_executable, follow_symlinks=False)
+        _assert_path_matches_descriptor(
+            staged_executable, executable_fd, label="executable"
+        )
+        launch_args = (str(staged_executable), *spec.args[1:])
+
         null_fd = os.open(
             "/dev/null",
             os.O_RDWR | getattr(os, "O_CLOEXEC", 0),
@@ -182,7 +205,7 @@ def _launch_macos_process(spec: ResumeCommandSpec) -> _PosixSpawnProcess:
         if functions["attributes_setflags"](ctypes.byref(attributes), 0x0400) != 0:
             raise OSError("spawn_setsid")
 
-        encoded_args = [os.fsencode(argument) for argument in spec.args]
+        encoded_args = [os.fsencode(argument) for argument in launch_args]
         argv = (ctypes.c_char_p * (len(encoded_args) + 1))(
             *encoded_args,
             None,
@@ -197,7 +220,7 @@ def _launch_macos_process(spec: ResumeCommandSpec) -> _PosixSpawnProcess:
         pid = ctypes.c_int()
         result = spawn(
             ctypes.byref(pid),
-            os.fsencode(spec.args[0]),
+            os.fsencode(str(staged_executable)),
             ctypes.byref(actions),
             ctypes.byref(attributes),
             argv,
@@ -205,7 +228,38 @@ def _launch_macos_process(spec: ResumeCommandSpec) -> _PosixSpawnProcess:
         )
         if result != 0:
             raise OSError(result, os.strerror(result))
-        return _PosixSpawnProcess(pid.value)
+        def cleanup_staging() -> None:
+            if staged_executable is not None:
+                try:
+                    staged_executable.unlink()
+                except OSError:
+                    pass
+            if staging_dir is not None:
+                try:
+                    staging_dir.rmdir()
+                except OSError:
+                    pass
+
+        process = _PosixSpawnProcess(pid.value, cleanup=cleanup_staging)
+        keep_staging_until_wait = True
+        try:
+            _assert_path_matches_descriptor(
+                Path(spec.args[0]), executable_fd, label="executable"
+            )
+            if config_fd >= 0:
+                _assert_path_matches_descriptor(
+                    Path(environment["CLAUDE_CONFIG_DIR"]),
+                    config_fd,
+                    label="account_directory",
+                )
+        except OSError as error:
+            try:
+                os.kill(process.pid, signal.SIGKILL)
+            except (OSError, ProcessLookupError):
+                pass
+            process.wait()
+            raise OSError("launch_boundary_changed") from error
+        return process
     finally:
         if actions_initialized:
             functions["actions_destroy"](ctypes.byref(actions))
@@ -214,6 +268,17 @@ def _launch_macos_process(spec: ResumeCommandSpec) -> _PosixSpawnProcess:
         for descriptor in (null_fd, config_fd, cwd_fd, executable_fd):
             if descriptor >= 0:
                 os.close(descriptor)
+        if not keep_staging_until_wait:
+            if staged_executable is not None:
+                try:
+                    staged_executable.unlink()
+                except OSError:
+                    pass
+            if staging_dir is not None:
+                try:
+                    staging_dir.rmdir()
+                except OSError:
+                    pass
 
 
 def build_resume_spec(

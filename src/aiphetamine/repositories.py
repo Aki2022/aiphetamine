@@ -39,11 +39,11 @@ def _parse_absolute_path(value: Any) -> Path | None:
     return path if path.is_absolute() else None
 
 
-def _read_json(path: Path) -> dict[str, Any] | None:
+def _read_json(path: Path, *, repair_permissions: bool = True) -> dict[str, Any] | None:
     if path.is_symlink() or not path.is_file():
         return None
     try:
-        value = json.loads(read_private_text(path))
+        value = json.loads(read_private_text(path, repair_permissions=repair_permissions))
     except (OSError, UnicodeError, json.JSONDecodeError):
         return None
     return value if isinstance(value, dict) else None
@@ -52,8 +52,9 @@ def _read_json(path: Path) -> dict[str, Any] | None:
 class _Repository(Generic[T]):
     directory_name: str
 
-    def __init__(self, root: Path):
+    def __init__(self, root: Path, *, repair_permissions: bool = True):
         self.root = root
+        self.repair_permissions = repair_permissions
         self.ambiguous_session_ids: set[str] = set()
 
     def _files(self) -> list[Path]:
@@ -121,7 +122,7 @@ class CandidateRepository(_Repository[CandidateSession]):
         self.ambiguous_session_ids = set()
         records: list[CandidateSession] = []
         for path in self._files():
-            payload = _read_json(path)
+            payload = _read_json(path, repair_permissions=self.repair_permissions)
             if payload is None:
                 continue
             record = self._parse(path, payload, now, max_age)
@@ -171,7 +172,7 @@ class RateLimitEventRepository(_Repository[RateLimitEvent]):
         self.ambiguous_session_ids = set()
         records: list[RateLimitEvent] = []
         for path in self._files():
-            payload = _read_json(path)
+            payload = _read_json(path, repair_permissions=self.repair_permissions)
             if payload is None:
                 continue
             record = self._parse(path, payload, now, max_age)

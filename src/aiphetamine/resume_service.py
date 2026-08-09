@@ -27,9 +27,14 @@ class RuntimePollCycle:
         selection_store: InMemorySelectionStore,
         executor: object,
         candidate_provider: Callable[[datetime], Iterable[CandidateSession]] | None = None,
+        repair_permissions: bool = True,
     ) -> None:
-        self._candidate_repository = CandidateRepository(candidates_root)
-        self._event_repository = RateLimitEventRepository(rate_limits_root)
+        self._candidate_repository = CandidateRepository(
+            candidates_root, repair_permissions=repair_permissions
+        )
+        self._event_repository = RateLimitEventRepository(
+            rate_limits_root, repair_permissions=repair_permissions
+        )
         self._selection_store = selection_store
         self._executor = executor
         self._candidate_provider = candidate_provider

@@ -142,6 +142,42 @@ class RuntimeCoreTests(unittest.TestCase):
                 with self.assertRaises(OSError):
                     ClaudeResumeExecutor._launch_process(spec)
 
+    @unittest.skipUnless(sys.platform == "darwin", "requires macOS native spawn")
+    def test_macos_launch_stops_when_paths_change_after_identity_check(self):
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as temp_dir:
+            root = Path(temp_dir)
+            executable = root / "claude"
+            executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            executable.chmod(0o700)
+            config = root / "config"
+            config.mkdir(mode=0o700)
+            replacement = root / "replacement"
+            original_assert = executor_module._assert_path_matches_descriptor
+
+            def swap_after_assert(path, descriptor, *, label):
+                original_assert(path, descriptor, label=label)
+                if label == "executable":
+                    replacement.write_text("#!/bin/sh\nexit 91\n", encoding="utf-8")
+                    replacement.chmod(0o700)
+                    os.replace(replacement, executable)
+                elif label == "account_directory":
+                    original_config = root / "original-config"
+                    os.replace(config, original_config)
+                    config.mkdir(mode=0o700)
+
+            spec = build_resume_spec(
+                executable,
+                ResumeRequest("safe", root),
+                config_dir=config,
+            )
+            with mock.patch.object(
+                executor_module,
+                "_assert_path_matches_descriptor",
+                swap_after_assert,
+            ):
+                with self.assertRaises(OSError):
+                    ClaudeResumeExecutor._launch_process(spec)
+
     def test_account_routed_executor_sets_the_selected_config_directory(self):
         calls = []
 

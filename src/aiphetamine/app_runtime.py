@@ -64,10 +64,10 @@ def read_only_dry_run(data_root: Path, now: datetime) -> DryRunReport:
 
     candidates_root = data_root / "candidates"
     rate_limits_root = data_root / "rate_limits"
-    candidate_repository = CandidateRepository(candidates_root)
+    candidate_repository = CandidateRepository(candidates_root, repair_permissions=False)
     candidates = candidate_repository.list_candidates(now=now)
     known_session_ids = {candidate.session_id for candidate in candidates}
-    event_repository = RateLimitEventRepository(rate_limits_root)
+    event_repository = RateLimitEventRepository(rate_limits_root, repair_permissions=False)
     events = event_repository.list_events(now=now)
     ambiguous_session_ids = (
         candidate_repository.ambiguous_session_ids
@@ -94,6 +94,7 @@ def read_only_dry_run(data_root: Path, now: datetime) -> DryRunReport:
         selection_store,
         executor=None,
         candidate_provider=lambda _now: tuple(candidates),
+        repair_permissions=False,
     )
     outcomes = cycle.preview(now)
     status_counts: dict[str, int] = {}

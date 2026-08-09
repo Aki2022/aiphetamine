@@ -156,6 +156,8 @@ class AppShellTests(unittest.TestCase):
             event_path = rate_limits / f"{session_key(session_id)}.json"
             candidate_path.write_text(json.dumps(candidate), encoding="utf-8")
             event_path.write_text(json.dumps(event), encoding="utf-8")
+            candidate_path.chmod(0o600)
+            event_path.chmod(0o600)
             before = (candidate_path.read_bytes(), event_path.read_bytes())
 
             report = read_only_dry_run(
@@ -171,6 +173,36 @@ class AppShellTests(unittest.TestCase):
             self.assertNotIn(session_id, json.dumps(output))
             self.assertNotIn(str(root), json.dumps(output))
             self.assertEqual(before, (candidate_path.read_bytes(), event_path.read_bytes()))
+
+    def test_dry_run_does_not_repair_loose_file_permissions(self):
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as temp_dir:
+            root = Path(temp_dir)
+            candidates = root / "candidates"
+            rate_limits = root / "rate_limits"
+            candidates.mkdir(mode=0o700)
+            rate_limits.mkdir(mode=0o700)
+            session_id = "session-dry-permissions"
+            payload = {
+                "schema_version": 1,
+                "record_type": "candidate",
+                "session_id": session_id,
+                "project_path": str(root),
+                "updated_at": "2026-07-21T11:59:00+00:00",
+            }
+            candidate_path = candidates / f"{session_key(session_id)}.json"
+            event_path = rate_limits / f"{session_key(session_id)}.json"
+            candidate_path.write_text(json.dumps(payload), encoding="utf-8")
+            event_path.write_text(
+                json.dumps({**payload, "record_type": "rate_limit", "reason": "rate_limit"}),
+                encoding="utf-8",
+            )
+            candidate_path.chmod(0o644)
+            event_path.chmod(0o644)
+
+            read_only_dry_run(root, datetime(2026, 7, 21, 12, tzinfo=UTC))
+
+            self.assertEqual(candidate_path.stat().st_mode & 0o777, 0o644)
+            self.assertEqual(event_path.stat().st_mode & 0o777, 0o644)
 
     def test_dry_run_script_outputs_safe_json_without_launching_claude(self):
         with tempfile.TemporaryDirectory() as temp_dir:

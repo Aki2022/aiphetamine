@@ -189,7 +189,7 @@ def ensure_private_file(path: Path) -> None:
         os.close(parent_fd)
 
 
-def read_private_text(path: Path) -> str:
+def read_private_text(path: Path, *, repair_permissions: bool = True) -> str:
     """Read a managed text file through a no-follow parent/file boundary."""
 
     path = _absolute(path)
@@ -208,6 +208,8 @@ def read_private_text(path: Path) -> str:
             file_stat, allow_root_owner=False
         ):
             raise OSError("unsafe_file")
+        if stat.S_IMODE(file_stat.st_mode) & 0o077 and not repair_permissions:
+            raise OSError("unsafe_file_permissions")
         if stat.S_IMODE(file_stat.st_mode) & 0o077:
             os.fchmod(descriptor, 0o600)
             file_stat = os.fstat(descriptor)

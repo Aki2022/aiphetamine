@@ -68,8 +68,8 @@ class MenuModelTests(unittest.TestCase):
 
             rows = build_session_rows(candidates, InMemorySelectionStore())
 
-            self.assertIn("alpha-12", rows[0].title)
-            self.assertIn("bravo-12", rows[1].title)
+            self.assertIn(session_key(candidates[0].session_id)[:8], rows[0].title)
+            self.assertIn(session_key(candidates[1].session_id)[:8], rows[1].title)
 
     def test_rows_use_project_directory_and_session_discriminator_when_hook_names_are_missing(self):
         with tempfile.TemporaryDirectory() as temp_dir:
