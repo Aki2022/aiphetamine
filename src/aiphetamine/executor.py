@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import subprocess
+import ctypes
 from dataclasses import dataclass
 import os
 from pathlib import Path
+import sys
 from typing import Callable, Mapping
 
 from .domain import ResumeLaunchResult, ResumeRequest
@@ -29,6 +31,152 @@ class ResumeCommandSpec:
     @property
     def devnull_streams(self) -> bool:
         return True
+
+
+class _PosixSpawnProcess:
+    """Small Popen-compatible wait handle for the macOS posix_spawn path."""
+
+    def __init__(self, pid: int) -> None:
+        self.pid = pid
+        self._returncode: int | None = None
+
+    def wait(self) -> int:
+        if self._returncode is not None:
+            return self._returncode
+        while True:
+            try:
+                _, status = os.waitpid(self.pid, 0)
+                self._returncode = os.waitstatus_to_exitcode(status)
+                return self._returncode
+            except InterruptedError:
+                continue
+
+
+def _ctypes_function(library, name: str, *, restype, argtypes):
+    function = getattr(library, name)
+    function.restype = restype
+    function.argtypes = argtypes
+    return function
+
+
+def _launch_macos_process(spec: ResumeCommandSpec) -> _PosixSpawnProcess:
+    """Spawn with macOS's descriptor-relative fchdir file action.
+
+    macOS's ``/dev/fd/N`` cannot be supplied as ``subprocess.Popen(cwd=...)``
+    and cannot execute an O_RDONLY descriptor.  ``posix_spawn`` gives us the
+    native fchdir action while the executable remains open and validated until
+    the spawn call completes.
+    """
+
+    libc = ctypes.CDLL(None, use_errno=True)
+    void_pointer = ctypes.c_void_p
+    pointer = ctypes.POINTER(void_pointer)
+    integer = ctypes.c_int
+    functions = {
+        alias: _ctypes_function(libc, symbol, restype=integer, argtypes=args)
+        for alias, symbol, args in (
+            ("actions_init", "posix_spawn_file_actions_init", [pointer]),
+            ("actions_fchdir", "posix_spawn_file_actions_addfchdir_np", [pointer, integer]),
+            ("actions_dup2", "posix_spawn_file_actions_adddup2", [pointer, integer, integer]),
+            ("actions_close", "posix_spawn_file_actions_addclose", [pointer, integer]),
+            ("actions_destroy", "posix_spawn_file_actions_destroy", [pointer]),
+            ("attributes_init", "posix_spawnattr_init", [pointer]),
+            ("attributes_setflags", "posix_spawnattr_setflags", [pointer, ctypes.c_short]),
+            ("attributes_destroy", "posix_spawnattr_destroy", [pointer]),
+        )
+    }
+    spawn = _ctypes_function(
+        libc,
+        "posix_spawn",
+        restype=integer,
+        argtypes=[
+            ctypes.POINTER(integer),
+            ctypes.c_char_p,
+            pointer,
+            pointer,
+            ctypes.POINTER(ctypes.c_char_p),
+            ctypes.POINTER(ctypes.c_char_p),
+        ],
+    )
+
+    executable_fd = open_verified_executable(Path(spec.args[0]))
+    cwd_fd = -1
+    config_fd = -1
+    null_fd = -1
+    actions = void_pointer()
+    attributes = void_pointer()
+    actions_initialized = False
+    attributes_initialized = False
+    try:
+        cwd_fd = open_private_directory(spec.cwd)
+        environment = dict(spec.environment) if spec.environment is not None else dict(os.environ)
+        if spec.environment is not None:
+            config_dir = environment.get("CLAUDE_CONFIG_DIR")
+            if config_dir is None:
+                raise OSError("unsafe_account_directory")
+            config_fd = open_private_directory(Path(config_dir))
+            # macOS fdescfs exposes the descriptor itself but does not support
+            # resolving child names beneath /dev/fd/N.  Keep the directory
+            # open through spawn for validation, while passing its validated
+            # absolute path to Claude for normal directory traversal.
+            environment["CLAUDE_CONFIG_DIR"] = str(config_dir)
+
+        null_fd = os.open(
+            "/dev/null",
+            os.O_RDWR | getattr(os, "O_CLOEXEC", 0),
+        )
+        if functions["actions_init"](ctypes.byref(actions)) != 0:
+            raise OSError("spawn_file_actions_init")
+        actions_initialized = True
+        if functions["actions_fchdir"](ctypes.byref(actions), cwd_fd) != 0:
+            raise OSError("spawn_fchdir")
+        for target in (0, 1, 2):
+            if functions["actions_dup2"](ctypes.byref(actions), null_fd, target) != 0:
+                raise OSError("spawn_stdio")
+        if null_fd not in (0, 1, 2):
+            if functions["actions_close"](ctypes.byref(actions), null_fd) != 0:
+                raise OSError("spawn_devnull_close")
+
+        if functions["attributes_init"](ctypes.byref(attributes)) != 0:
+            raise OSError("spawn_attributes_init")
+        attributes_initialized = True
+        # POSIX_SPAWN_SETSID is Darwin-specific and is the equivalent of
+        # Popen(start_new_session=True) for this native path.
+        if functions["attributes_setflags"](ctypes.byref(attributes), 0x0400) != 0:
+            raise OSError("spawn_setsid")
+
+        encoded_args = [os.fsencode(argument) for argument in spec.args]
+        argv = (ctypes.c_char_p * (len(encoded_args) + 1))(
+            *encoded_args,
+            None,
+        )
+        encoded_environment = [
+            os.fsencode(f"{key}={value}") for key, value in environment.items()
+        ]
+        envp = (ctypes.c_char_p * (len(encoded_environment) + 1))(
+            *encoded_environment,
+            None,
+        )
+        pid = ctypes.c_int()
+        result = spawn(
+            ctypes.byref(pid),
+            os.fsencode(spec.args[0]),
+            ctypes.byref(actions),
+            ctypes.byref(attributes),
+            argv,
+            envp,
+        )
+        if result != 0:
+            raise OSError(result, os.strerror(result))
+        return _PosixSpawnProcess(pid.value)
+    finally:
+        if actions_initialized:
+            functions["actions_destroy"](ctypes.byref(actions))
+        if attributes_initialized:
+            functions["attributes_destroy"](ctypes.byref(attributes))
+        for descriptor in (null_fd, config_fd, cwd_fd, executable_fd):
+            if descriptor >= 0:
+                os.close(descriptor)
 
 
 def build_resume_spec(
@@ -77,46 +225,22 @@ class ClaudeResumeExecutor:
     def _launch_process(spec: ResumeCommandSpec) -> subprocess.Popen[bytes]:
         if not spec.args:
             raise OSError("unsafe_executable")
-        if not os.path.isdir("/dev/fd"):
-            raise OSError("fd_exec_unavailable")
-        executable_fd = -1
-        config_fd = -1
-        cwd_fd = -1
+        if sys.platform == "darwin":
+            return _launch_macos_process(spec)
+        executable_fd = open_verified_executable(Path(spec.args[0]))
         try:
-            executable_fd = open_verified_executable(Path(spec.args[0]))
-            args = list(spec.args)
-            args[0] = f"/dev/fd/{executable_fd}"
-            cwd_fd = open_private_directory(spec.cwd)
-            cwd_path = f"/dev/fd/{cwd_fd}"
-            environment = dict(spec.environment) if spec.environment is not None else None
-            pass_fds = [executable_fd, cwd_fd]
-            if environment is not None:
-                config_dir = environment.get("CLAUDE_CONFIG_DIR")
-                if config_dir is None:
-                    raise OSError("unsafe_account_directory")
-                config_fd = open_private_directory(Path(config_dir))
-                environment["CLAUDE_CONFIG_DIR"] = f"/dev/fd/{config_fd}"
-                pass_fds.append(config_fd)
-            for descriptor in pass_fds:
-                os.set_inheritable(descriptor, True)
             return subprocess.Popen(
-                args,
-                cwd=cwd_path,
+                spec.args,
+                cwd=spec.cwd,
                 shell=False,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 start_new_session=True,
-                env=environment,
-                pass_fds=tuple(pass_fds),
+                env=dict(spec.environment) if spec.environment is not None else None,
             )
         finally:
-            if config_fd >= 0:
-                os.close(config_fd)
-            if cwd_fd >= 0:
-                os.close(cwd_fd)
-            if executable_fd >= 0:
-                os.close(executable_fd)
+            os.close(executable_fd)
 
 
 class AccountRoutedResumeExecutor:

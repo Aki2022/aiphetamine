@@ -9,7 +9,24 @@ from pathlib import Path
 
 
 def _absolute(path: Path) -> Path:
-    return Path(os.path.abspath(os.fspath(path)))
+    absolute = Path(os.path.abspath(os.fspath(path)))
+    # macOS exposes these root-owned system directories through symlinks.  The
+    # aliases are fixed platform boundaries, so normalize only the exact
+    # known targets instead of resolving arbitrary user-controlled components.
+    for alias, target in (
+        (Path("/var"), Path("/private/var")),
+        (Path("/tmp"), Path("/private/tmp")),
+    ):
+        if absolute != alias and alias not in absolute.parents:
+            continue
+        try:
+            if not os.path.islink(alias) or Path(os.path.realpath(alias)) != target:
+                continue
+        except OSError:
+            continue
+        suffix = absolute.relative_to(alias)
+        return target / suffix
+    return absolute
 
 
 def _owner_is_trusted(st: os.stat_result, *, allow_root_owner: bool = True) -> bool:
@@ -41,6 +58,8 @@ def _open_trusted_directory(path: Path, *, leaf_owner_current: bool = True) -> i
     absolute = _absolute(path)
     if not absolute.is_absolute():
         raise OSError("absolute_path_required")
+    if leaf_owner_current and absolute == Path(absolute.anchor or os.sep):
+        raise OSError("unsafe_directory")
     fd = os.open(absolute.anchor or os.sep, _directory_open_flags())
     try:
         root_stat = os.fstat(fd)

@@ -396,7 +396,7 @@ rate limitイベントJSONが存在するセッションだけを表示する。
 - resume実行後にJSONを削除した
 - Hookまたは外部処理がJSONを削除した
 - ユーザーがアプリを終了した
-- AIphetamine再起動時の初期化で削除した
+- AIphetamine再起動時のcleanupで期限切れ・不正・processing・一時ファイルとして削除した
 
 アプリ起動中の監視対象`(session_id, account_name)`集合は、JSONが一時的に消えても保持する。ただしUI一覧にはJSONが存在するセッションだけを表示する。
 
@@ -412,7 +412,7 @@ ON/OFFのメニュー操作は設定生成の状態だけを扱う。LaunchAgent
 既存plistの削除は実施せず、生成済みplistを利用者が手動で`launchctl`
 へ登録・解除する。
 
-ログイン起動後も、通常起動と同様に既存JSONを削除し、次の2時間境界まで待つ。
+ログイン起動後も、通常起動と同様に12時間以内の正当なrate limitイベントを保持し、期限切れ・不正・processing・一時ファイルだけをcleanupして、次の2時間境界まで待つ。
 
 ## 8.13 終了
 

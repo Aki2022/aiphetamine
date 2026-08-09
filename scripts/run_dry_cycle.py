@@ -13,7 +13,7 @@ import sys
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPOSITORY_ROOT / "src"))
 
-from aiphetamine.app_runtime import ApplicationRuntime  # noqa: E402
+from aiphetamine.app_runtime import read_only_dry_run  # noqa: E402
 
 
 def main() -> int:
@@ -25,7 +25,7 @@ def main() -> int:
     )
     args = parser.parse_args()
     try:
-        report = ApplicationRuntime(args.data_root).dry_run(datetime.now().astimezone())
+        report = read_only_dry_run(args.data_root, datetime.now().astimezone())
     except (OSError, ValueError, TypeError):
         print(json.dumps({"mode": "dry-run", "error": "invalid_data_root"}))
         return 2

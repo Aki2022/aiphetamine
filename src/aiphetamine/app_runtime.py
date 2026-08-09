@@ -59,6 +59,54 @@ class DryRunReport:
         }
 
 
+def read_only_dry_run(data_root: Path, now: datetime) -> DryRunReport:
+    """Inspect existing state without creating locks, logs, or directories."""
+
+    candidates_root = data_root / "candidates"
+    rate_limits_root = data_root / "rate_limits"
+    candidate_repository = CandidateRepository(candidates_root)
+    candidates = candidate_repository.list_candidates(now=now)
+    known_session_ids = {candidate.session_id for candidate in candidates}
+    event_repository = RateLimitEventRepository(rate_limits_root)
+    events = event_repository.list_events(now=now)
+    ambiguous_session_ids = (
+        candidate_repository.ambiguous_session_ids
+        | event_repository.ambiguous_session_ids
+    )
+    for event in events:
+        if event.session_id in known_session_ids or event.session_id in ambiguous_session_ids:
+            continue
+        candidates.append(
+            CandidateSession(
+                schema_version=1,
+                record_type="candidate",
+                session_id=event.session_id,
+                project_path=event.project_path,
+                updated_at=event.updated_at,
+                account_name=event.account_name,
+            )
+        )
+    candidates.sort(key=lambda candidate: candidate.session_id)
+    selection_store = InMemorySelectionStore()
+    cycle = RuntimePollCycle(
+        candidates_root,
+        rate_limits_root,
+        selection_store,
+        executor=None,
+        candidate_provider=lambda _now: tuple(candidates),
+    )
+    outcomes = cycle.preview(now)
+    status_counts: dict[str, int] = {}
+    for outcome in outcomes:
+        status_counts[outcome.status] = status_counts.get(outcome.status, 0) + 1
+    return DryRunReport(
+        candidate_count=len(candidates),
+        event_count=len(events),
+        next_boundary=next_boundary(now),
+        status_counts=status_counts,
+    )
+
+
 class ApplicationRuntime:
     def __init__(self, data_root: Path, *, log_salt: bytes | None = None, session_metadata=None):
         self.data_root = data_root
@@ -173,22 +221,4 @@ class ApplicationRuntime:
             pass
 
     def dry_run(self, now: datetime) -> DryRunReport:
-        cycle = RuntimePollCycle(
-            self.candidates_root,
-            self.rate_limits_root,
-            self.selection_store,
-            executor=None,
-            candidate_provider=self.candidates,
-        )
-        candidates = self.candidates(now)
-        events = RateLimitEventRepository(self.rate_limits_root).list_events(now=now)
-        outcomes = cycle.preview(now)
-        status_counts: dict[str, int] = {}
-        for outcome in outcomes:
-            status_counts[outcome.status] = status_counts.get(outcome.status, 0) + 1
-        return DryRunReport(
-            candidate_count=len(candidates),
-            event_count=len(events),
-            next_boundary=next_boundary(now),
-            status_counts=status_counts,
-        )
+        return read_only_dry_run(self.data_root, now)

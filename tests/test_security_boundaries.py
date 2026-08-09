@@ -14,6 +14,7 @@ from aiphetamine.app_runtime import ApplicationRuntime
 from aiphetamine.domain import CandidateSession, RateLimitEvent, session_key
 from aiphetamine.filesystem_security import (
     is_secure_account_directory,
+    open_private_directory,
     read_private_text,
     validate_external_executable,
 )
@@ -142,6 +143,12 @@ class SecurityBoundaryTests(unittest.TestCase):
 
             self.assertFalse(is_secure_account_directory(account))
             self.assertFalse(validate_external_executable(executable))
+
+    def test_private_directory_rejects_filesystem_root(self):
+        with self.assertRaises(OSError):
+            open_private_directory(Path("/"))
+
+        self.assertFalse(is_secure_account_directory(Path("/")))
 
     def test_executable_boundary_rejects_group_writable_file(self):
         with tempfile.TemporaryDirectory(dir="/private/tmp") as temp_dir:

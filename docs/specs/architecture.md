@@ -898,10 +898,10 @@ plist項目例:
 
 ## 17.1 アプリログ
 
-`TimedRotatingFileHandler`を利用する。
+`TimedRotatingFileHandler`を基底にしたdescriptor-relativeなsecure handlerを利用する。
 
 ```python
-handler = TimedRotatingFileHandler(
+handler = SecureTimedRotatingFileHandler(
     filename=LOGS_DIR / "aiphetamine.log",
     when="midnight",
     backupCount=7,
@@ -937,7 +937,7 @@ timestamp level component event correlation_id error_class
 
 ## 18. 起動シーケンス
 
-`config.json`が欠落、破損、または検証失敗した場合もAppKitメニューバーを縮退起動する。メニュー先頭に`設定エラー — installを再実行`を表示し、候補の有効化とresume処理を無効化する。Launch at LoginのOFF、Quit、サニタイズ済みログは利用可能とする。
+`config.json`が欠落、破損、または検証失敗した場合もAppKitメニューバーを縮退起動する。候補一覧と選択UIは表示されるが、`DisabledResumeExecutor`がresume起動を拒否し、結果は`launch_disabled`として復元される。Launch at LoginのOFF、Quit、サニタイズ済みログは利用可能とする。設定エラー専用のメニュー行は現行実装の契約に含めない。
 
 データルートを安全に作成・検証した直後、起動時cleanupより前に`instance.lock`を開き、`fcntl.flock(LOCK_EX | LOCK_NB)`を取得する。lockはプロセス終了まで保持する。取得できない二つ目のプロセスは、cleanup、設定変更、UI起動を行わず、サニタイズした理由だけを記録して終了する。lockファイル自体は残してよい。
 
@@ -1019,7 +1019,15 @@ Filter selected session IDs
 Rename .json → .processing
     │
     ▼
-Popen(["claude", "-p", "--resume", id, "Continue"])
+    posix_spawn(
+        verified_claude_path,
+        cwd=file_actions.addfchdir(verified_project_directory),
+        argv=["claude", "-p", "--resume", id, "Continue"],
+        stdin=DEVNULL,
+        stdout=DEVNULL,
+        stderr=DEVNULL,
+        start_new_session=True,
+    )
     │
     ├── launch failed
     │      ▼

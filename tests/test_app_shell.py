@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 SOURCE_ROOT = Path(__file__).resolve().parents[1] / "src"
 sys.path.insert(0, str(SOURCE_ROOT))
 
-from aiphetamine.app_runtime import ApplicationRuntime, PollStatus
+from aiphetamine.app_runtime import ApplicationRuntime, PollStatus, read_only_dry_run
 from aiphetamine.domain import session_key
 
 
@@ -158,7 +158,8 @@ class AppShellTests(unittest.TestCase):
             event_path.write_text(json.dumps(event), encoding="utf-8")
             before = (candidate_path.read_bytes(), event_path.read_bytes())
 
-            report = ApplicationRuntime(root).dry_run(
+            report = read_only_dry_run(
+                root,
                 datetime(2026, 7, 21, 21, 10, tzinfo=UTC)
             )
             output = report.as_dict()
@@ -173,9 +174,8 @@ class AppShellTests(unittest.TestCase):
 
     def test_dry_run_script_outputs_safe_json_without_launching_claude(self):
         with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            (root / "candidates").mkdir()
-            (root / "rate_limits").mkdir()
+            root = Path(temp_dir) / "missing-data-root"
+            before = list(root.parent.iterdir())
             result = subprocess.run(
                 [
                     sys.executable,
@@ -194,6 +194,7 @@ class AppShellTests(unittest.TestCase):
             self.assertEqual(output["mode"], "dry-run")
             self.assertNotIn(str(root), result.stdout)
             self.assertNotIn("claude", result.stdout.lower())
+            self.assertEqual(list(root.parent.iterdir()), before)
 
 
 if __name__ == "__main__":
