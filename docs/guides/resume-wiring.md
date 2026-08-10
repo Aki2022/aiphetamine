@@ -31,6 +31,15 @@ When a rate-limit event exists without a candidate snapshot, the runtime reconst
 
 The executable path is accepted only from an owner-controlled JSON configuration file when it is an absolute, regular, executable, non-symlink file and every ancestor directory is a trusted, non-writable boundary. The configured path points to the verified managed Claude executable. Immediately before a real launch, the runtime opens the project directory, account directory, and executable with no-follow descriptors, compares each pathname to the descriptor identity, and fails closed on any mismatch. The project descriptor is also compared with the device/inode captured when the user selected the session. If a boundary cannot be proven stable, the runtime disables that launch without disabling the menu.
 
+The account roots must be private to the current user. Set `~/.claude` and
+`~/.claude-seat2` to mode `700`, and keep
+`~/.local/share/aiphetamine/config.json` at mode `600`. This is not a special
+permission granted to Python; it is an owner-only restriction that the
+AIphetamine process inherits when it runs as the user. If an account root is
+`755`, candidates can remain visible while account-routed resume is refused
+and the poll result is restored. Claude Code's project trust prompt is a
+separate mechanism.
+
 ## Verification
 
 Run the unittest suite, Python compilation, diff check, and documentation validator. The AppKit test verifies the status-item label and check-state behavior. Only checked menu rows can reach the live executor. Existing local rate-limit files without an account label are not evidence of the second account; they must be matched to the session store or recreated by a naturally occurring Hook event.

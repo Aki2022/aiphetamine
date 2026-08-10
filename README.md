@@ -44,6 +44,23 @@ environment-dependent and are not treated as guaranteed product behavior.
 No Claude credentials, tokens, or account identifiers belong in this
 repository.
 
+### Account directory permissions
+
+The runtime safety check accepts an account only when its Claude configuration
+directory is private to the current user:
+
+```bash
+chmod 700 ~/.claude ~/.claude-seat2
+chmod 600 ~/.local/share/aiphetamine/config.json
+```
+
+These commands do not grant special access to `python3`. They restrict the
+directories and configuration file to their owner; the menu-bar process and
+its LaunchAgent run as that same user. If either Claude directory is `755`,
+AIphetamine may still show candidate rows, but it refuses account-routed
+resume launches and the poll result is restored. The Claude Code “trust this
+folder” prompt is a separate check.
+
 ## Verify locally
 
 From the repository root:
