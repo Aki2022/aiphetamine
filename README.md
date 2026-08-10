@@ -56,10 +56,11 @@ chmod 600 ~/.local/share/aiphetamine/config.json
 
 These commands do not grant special access to `python3`. They restrict the
 directories and configuration file to their owner; the menu-bar process and
-its LaunchAgent run as that same user. If either Claude directory is `755`,
-AIphetamine may still show candidate rows, but it refuses account-routed
-resume launches and the poll result is restored. The Claude Code “trust this
-folder” prompt is a separate check.
+its LaunchAgent run as that same user. If one Claude directory is `755`,
+AIphetamine may still show candidate rows for that account, but refuses
+resume launches for that account while another secure account can continue to
+route normally. The Claude Code “trust this folder” prompt is a separate
+check.
 
 ## Verify locally
 

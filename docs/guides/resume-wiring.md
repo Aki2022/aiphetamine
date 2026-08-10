@@ -45,9 +45,9 @@ The account roots must be private to the current user. Set `~/.claude` and
 `~/.local/share/aiphetamine/config.json` at mode `600`. This is not a special
 permission granted to Python; it is an owner-only restriction that the
 AIphetamine process inherits when it runs as the user. If an account root is
-`755`, candidates can remain visible while account-routed resume is refused
-and the poll result is restored. Claude Code's project trust prompt is a
-separate mechanism.
+`755`, candidates can remain visible while resume is refused for that account
+and the poll result is restored; another account with a secure root can still
+route normally. Claude Code's project trust prompt is a separate mechanism.
 
 ## Verification
 
