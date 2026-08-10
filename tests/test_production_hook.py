@@ -49,6 +49,21 @@ class ProductionHookTests(unittest.TestCase):
             )
             self.assertTrue((root / "candidates" / "alias" / f"{key}.json").exists())
 
+    def test_unlabeled_session_end_does_not_delete_account_scoped_candidates(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            payload = {"session_id": "session-ambiguous-end", "cwd": str(root)}
+            now = datetime(2026, 7, 21, 12, tzinfo=UTC)
+            key = session_key(payload["session_id"])
+
+            self.assertEqual(apply_event(payload, "SessionStart", root, now, "main"), "written")
+            self.assertEqual(apply_event(payload, "SessionStart", root, now, "alias"), "written")
+            self.assertEqual(
+                apply_event(payload, "SessionEnd", root, now), "preserved_unlabeled"
+            )
+            self.assertTrue((root / "candidates" / "main" / f"{key}.json").exists())
+            self.assertTrue((root / "candidates" / "alias" / f"{key}.json").exists())
+
     def test_hook_rejects_unallowlisted_account_name(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

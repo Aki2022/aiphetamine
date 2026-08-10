@@ -429,7 +429,7 @@ resume前追加条件:
 
 ## 9.1 責務
 
-Claude Code Hookは、候補セッションの最新スナップショットとrate limit到達イベントをJSONへ変換する。セッション終了Hookは対応するrate limitイベントがない場合だけ候補記録を削除し、制限到達後のresume選択に必要な候補を保持する。
+Claude Code Hookは、候補セッションの最新スナップショットとrate limit到達イベントをJSONへ変換する。セッション終了Hookは、アカウントラベルがある場合に対応する候補記録だけを削除し、制限到達後のresume選択に必要な候補を保持する。ラベルがない場合は所有者を特定できないため、アカウント別候補を横断削除しない。
 
 AIphetamine本体はClaudeの出力を直接監視しない。
 
@@ -464,7 +464,7 @@ rate limit Hookの出力先:
 
 同じアカウントスコープの同じsession_idが既に存在する場合は、最新候補として原子的に上書きする。アカウントをまたぐ同一session_idは曖昧として除外する。
 
-セッション終了Hookは、対応する`candidates/{main,alias,unknown}/<session_key>.json`を直接かつ冪等に削除する。ファイルが既に存在しない場合も成功扱いとする。アプリ停止中も同じ処理を行う。
+セッション終了Hookは、アカウントラベルがある場合だけ対応する`candidates/{main,alias,unknown}/<session_key>.json`を直接かつ冪等に削除する。アカウントラベルがない場合は所有者を特定できないため、`main`と`alias`の候補を削除せず、`unknown`または旧フラット配置だけを対象にする。ファイルが既に存在しない場合も成功扱いとする。アプリ停止中も同じ処理を行う。
 
 RepositoryはJSON内部のsession_idからsession_keyを再計算し、ファイル名と一致しない記録を不正として処理対象から除外する。
 
@@ -478,7 +478,7 @@ RepositoryはJSON内部のsession_idからsession_keyを再計算し、ファイ
 → parent directory fsync
 ```
 
-一時ファイルは保存先と同じディレクトリへ`0600`で作成し、同一ファイルシステム上の`os.replace`を利用する。途中で失敗した一時ファイルは通常処理対象にせず、rate limit側は次回起動時cleanup対象とする。
+一時ファイルは保存先と同じディレクトリへ`0600`で作成し、同一ファイルシステム上の`os.replace`を利用する。途中で失敗した一時ファイルは通常処理対象にせず、rate limit側は24時間を超えたものだけを次回起動時cleanup対象とする。24時間以内の一時ファイルは書き込み中の可能性があるため保持する。
 
 候補削除時は対象ファイルをunlinkした後、対象スコープディレクトリを`fsync`する。ファイル不在は成功扱いとする。
 
@@ -589,7 +589,7 @@ abc.processing
 - 12時間以内の有効な`*.json`は保持
 - 古い・不正な`*.json`削除
 - `*.processing`削除
-- `*.tmp.*`削除
+- 24時間を超えた`*.tmp.*`削除
 
 削除失敗はログに記録するが、可能な限り起動を継続する。
 
@@ -963,7 +963,7 @@ Create data directories
 Acquire exclusive instance.lock
         │
         ▼
-Delete stale rate_limits/{main,alias,unknown}/*.json/.processing/.tmp
+Delete stale rate_limits/{main,alias,unknown}/*.json/.processing and `.tmp.` artifacts older than 24 hours
         │
         ▼
 Load fresh candidates/{main,alias,unknown}/*.json snapshots

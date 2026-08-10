@@ -1,6 +1,6 @@
 ---
 id: GUIDE-resume-wiring
-updated_at: 2026-08-09
+updated_at: 2026-08-10
 source_issues: []
 source_workstreams:
   - WS-20260721-resume-wiring
@@ -26,6 +26,15 @@ transcript lookup may add a title or repository display name, but it never
 converts an unlabeled candidate into an account-authorized candidate.
 
 When a rate-limit event exists without a candidate snapshot, the runtime reconstructs a selectable candidate from the event only when the event has a known account label. This covers Claude flows that emit `SessionEnd` after `StopFailure`; the event remains the authoritative trigger while the candidate supplies the menu selection boundary. Unlabeled legacy events are kept for inspection but cannot be selected for automatic resume.
+
+An account-unlabeled `SessionEnd` never deletes `main` or `alias` candidate
+files because the event cannot identify their owner. It may remove only the
+`unknown` or legacy flat candidate namespace, and it preserves any matching
+rate-limit event in any account scope.
+
+Startup cleanup removes abandoned `.tmp.` artifacts only after they are more
+than 24 hours old. Recent temporary files are retained so cleanup cannot race
+with an atomic Hook write and discard an event still being produced.
 
 ## Configuration Boundary
 

@@ -418,7 +418,10 @@ class RuntimeCoreTests(unittest.TestCase):
             candidate.write_text("keep", encoding="utf-8")
             (root / "one.json").write_text("event", encoding="utf-8")
             (root / "two.processing").write_text("event", encoding="utf-8")
-            (root / "three.tmp.worker").write_text("event", encoding="utf-8")
+            old_temp = root / "three.tmp.worker"
+            old_temp.write_text("event", encoding="utf-8")
+            old_timestamp = datetime.now(UTC).timestamp() - 2 * 24 * 60 * 60
+            os.utime(old_temp, (old_timestamp, old_timestamp))
             (root / "notes.txt").write_text("keep", encoding="utf-8")
 
             removed = RateLimitEventRepository(root).cleanup_on_startup()
@@ -427,6 +430,19 @@ class RuntimeCoreTests(unittest.TestCase):
             self.assertTrue(candidate.exists())
             self.assertTrue((root / "notes.txt").exists())
             self.assertEqual(list(root.iterdir()), [candidate_root, root / "notes.txt"])
+
+    def test_startup_cleanup_preserves_fresh_temp_artifacts(self):
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as temp_dir:
+            root = Path(temp_dir)
+            fresh_temp = root / "event.tmp.writer"
+            fresh_temp.write_text("in progress", encoding="utf-8")
+
+            removed = RateLimitEventRepository(root).cleanup_on_startup(
+                now=datetime.now(UTC)
+            )
+
+            self.assertEqual(removed, 0)
+            self.assertTrue(fresh_temp.exists())
 
     def test_poll_cycle_completes_successful_launch_and_restores_failed_launch(self):
         with tempfile.TemporaryDirectory() as temp_dir:

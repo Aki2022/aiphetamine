@@ -3,7 +3,7 @@ schema_version: 2
 id: WS-20260721-resume-wiring
 status: active
 created_at: 2026-07-21
-updated_at: 2026-08-09
+updated_at: 2026-08-10
 branch: main
 pr: ""
 human_boundary_confirmed_at: 2026-07-21
@@ -138,6 +138,10 @@ The resume contract carries an optional account label. The account-routed execut
 The Hook/runtime boundary also preserves or reconstructs a candidate when `StopFailure(rate_limit)` is followed by `SessionEnd`, so an account-labeled rate-limit event remains selectable.
 
 Startup now preserves fresh valid rate-limit events and removes only stale or invalid artifacts, so reloading the menu does not discard the current natural verification event. See [ADR-20260809-preserve-fresh-rate-limits](../adrs/ADR-20260809-preserve-fresh-rate-limits.md).
+
+Unlabeled `SessionEnd` cleanup now preserves account-scoped candidates, and
+startup cleanup removes only `.tmp.` artifacts older than 24 hours so active
+Hook writes are not discarded. See [ADR-20260810-preserve-local-runtime-artifacts](../adrs/ADR-20260810-preserve-local-runtime-artifacts.md).
 
 Decision record: [ADR-20260809-account-routed-resume](../adrs/ADR-20260809-account-routed-resume.md).
 

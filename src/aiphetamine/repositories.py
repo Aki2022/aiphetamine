@@ -22,7 +22,19 @@ UTC = timezone.utc
 T = TypeVar("T")
 _ALLOWED_ACCOUNT_NAMES = frozenset(("main", "alias"))
 _ACCOUNT_SCOPES = _ALLOWED_ACCOUNT_NAMES | {"unknown"}
+_TEMP_ARTIFACT_MAX_AGE = timedelta(hours=24)
 _INVALID_ACCOUNT = object()
+
+
+def _is_stale_temp_artifact(path: Path, now: datetime) -> bool:
+    """Only remove temp files old enough to be abandoned writer artifacts."""
+
+    try:
+        metadata = os.stat(path, follow_symlinks=False)
+        modified_at = datetime.fromtimestamp(metadata.st_mtime, UTC)
+    except OSError:
+        return False
+    return now - modified_at > _TEMP_ARTIFACT_MAX_AGE
 
 
 def _parse_timestamp(value: Any) -> datetime | None:
@@ -275,6 +287,7 @@ class RateLimitEventRepository(_Repository[RateLimitEvent]):
             return 0
         if not self._root_is_private():
             return 0
+        current = (now or datetime.now(UTC)).astimezone(UTC)
         preserved: set[Path] = set()
         if preserve_fresh and now is not None:
             fresh_events = self.list_events(now=now)
@@ -306,6 +319,8 @@ class RateLimitEventRepository(_Repository[RateLimitEvent]):
                 if not path.is_file() and not path.is_symlink():
                     continue
                 if path in preserved:
+                    continue
+                if ".tmp." in path.name and not _is_stale_temp_artifact(path, current):
                     continue
                 if path.suffix == ".json" or path.suffix == ".processing" or ".tmp." in path.name:
                     try:

@@ -54,13 +54,23 @@ def apply_event(payload: dict[str, Any], event: str, data_root: Path, now: datet
     except OSError:
         return "filesystem_error"
     if event == "SessionEnd":
-        scopes = (scope,) if account_name is not None else tuple(sorted(_ACCOUNT_SCOPES))
-        rate_limit_paths = [rate_limits_root / item / f"{key}.json" for item in scopes]
+        # An unlabeled end event cannot identify which account owns a
+        # candidate. Inspect every rate-limit scope for preservation, but only
+        # delete the unknown/legacy candidate namespace.
+        rate_limit_paths = [
+            rate_limits_root / item / f"{key}.json"
+            for item in sorted(_ACCOUNT_SCOPES)
+        ]
         # Read the legacy flat location only to preserve an event created by an
         # older Hook; new writes always use an account scope.
         rate_limit_paths.append(rate_limits_root / f"{key}.json")
         if any(_is_regular_file(path) for path in rate_limit_paths):
             return "preserved_for_rate_limit"
+        scopes = (scope,) if account_name is not None else ("unknown",)
+        account_scoped_candidate_exists = account_name is None and any(
+            _is_regular_file(candidates_root / item / f"{key}.json")
+            for item in _ALLOWED_ACCOUNT_NAMES
+        )
         for item in scopes:
             target = candidates_root / item / f"{key}.json"
             if not target.parent.is_dir() or target.parent.is_symlink():
@@ -75,7 +85,7 @@ def apply_event(payload: dict[str, Any], event: str, data_root: Path, now: datet
             secure_unlink(candidates_root / f"{key}.json")
         except (FileNotFoundError, OSError):
             pass
-        return "removed"
+        return "preserved_unlabeled" if account_scoped_candidate_exists else "removed"
     if event not in {"SessionStart", "UserPromptSubmit", "StopFailure"}:
         return "ignored"
     directory = rate_limits if event == "StopFailure" else candidates
