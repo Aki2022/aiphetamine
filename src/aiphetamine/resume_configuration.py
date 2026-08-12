@@ -24,7 +24,7 @@ def load_claude_executable(config_path: Path) -> Path | None:
         return None
     try:
         value = json.loads(read_private_text(config_path))
-    except (OSError, UnicodeError, json.JSONDecodeError):
+    except (OSError, UnicodeError, json.JSONDecodeError, RecursionError):
         return None
     executable = value.get("claude_executable") if isinstance(value, dict) else None
     if not isinstance(executable, str) or not executable:

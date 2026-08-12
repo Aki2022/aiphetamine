@@ -17,17 +17,42 @@ class IntegrationArtifactTests(unittest.TestCase):
     def test_launch_agent_plist_is_generated_without_registration(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
+            executable = root / "python3"
+            executable.write_text("#!/bin/sh\n", encoding="utf-8")
+            executable.chmod(0o700)
             manager = LaunchAgentManager(root)
-            spec = LaunchAgentSpec("/opt/python/bin/python3", "aiphetamine")
+            spec = LaunchAgentSpec(str(executable), "aiphetamine")
 
             plist_path = manager.write_plist(spec)
             payload = plistlib.loads(plist_path.read_bytes())
 
             self.assertEqual(payload["Label"], "local.aiphetamine.menubar")
-            self.assertEqual(payload["ProgramArguments"], ["/opt/python/bin/python3", "-m", "aiphetamine"])
+            self.assertEqual(payload["ProgramArguments"], [str(executable), "-m", "aiphetamine"])
             self.assertTrue(payload["RunAtLoad"])
             self.assertFalse(payload["KeepAlive"])
             self.assertTrue(manager.is_generated())
+            self.assertEqual(root.stat().st_mode & 0o777, 0o700)
+
+    def test_launch_agent_preserves_existing_root_mode_and_rejects_unsafe_paths(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            root.chmod(0o755)
+            executable = root / "python3"
+            executable.write_text("#!/bin/sh\n", encoding="utf-8")
+            executable.chmod(0o700)
+            manager = LaunchAgentManager(root)
+
+            manager.write_plist(LaunchAgentSpec(str(executable), "aiphetamine"))
+            self.assertEqual(root.stat().st_mode & 0o777, 0o755)
+
+            with self.assertRaisesRegex(ValueError, "invalid_launch_agent_spec"):
+                manager.write_plist(LaunchAgentSpec("/private/tmp/not-python", "aiphetamine"))
+
+            missing_entrypoint = root / "missing-entrypoint.py"
+            with self.assertRaisesRegex(ValueError, "invalid_launch_agent_spec"):
+                manager.write_plist(
+                    LaunchAgentSpec(str(executable), "aiphetamine", missing_entrypoint)
+                )
 
     def test_hook_fragment_is_json_and_does_not_include_existing_settings_content(self):
         fragment = build_hook_settings_fragment("python3 /safe/aiphetamine_hook.py")

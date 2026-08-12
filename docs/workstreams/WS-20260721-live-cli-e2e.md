@@ -77,7 +77,7 @@ Execute the one approved live CLI call and reduce its result to safe allowlisted
 #### Acceptance
 
 - One call only, with no retry.
-- Exit status, stream type names, and result error booleans are retained; raw response and identifiers are discarded.
+- Exit status, fixed stream type classifications, and result error booleans are retained; raw response and identifiers are discarded.
 - No rate-limit behavior is inferred from a generic stream type.
 
 #### Current Status

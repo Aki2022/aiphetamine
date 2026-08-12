@@ -52,6 +52,13 @@ class RuntimeLoggingTests(unittest.TestCase):
 
             logger.close()
 
+    def test_correlation_id_handles_surrogate_session_id(self):
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as temp_dir:
+            logger = SanitizedLogger(Path(temp_dir), salt=b"test-salt")
+            correlation_id = logger.correlation_id("bad\ud800")
+            self.assertRegex(correlation_id, r"^[0-9a-f]{12}$")
+            logger.close()
+
     def test_logger_rejects_fifo_log_target(self):
         with tempfile.TemporaryDirectory(dir="/private/tmp") as temp_dir:
             import os

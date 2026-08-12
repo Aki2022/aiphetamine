@@ -61,7 +61,7 @@ def _read_json(path: Path, *, repair_permissions: bool = True) -> dict[str, Any]
         return None
     try:
         value = json.loads(read_private_text(path, repair_permissions=repair_permissions))
-    except (OSError, UnicodeError, json.JSONDecodeError):
+    except (OSError, UnicodeError, json.JSONDecodeError, RecursionError):
         return None
     return value if isinstance(value, dict) else None
 

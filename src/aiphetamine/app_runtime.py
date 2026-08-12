@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -9,7 +10,7 @@ from threading import Lock
 from typing import Any
 
 from .domain import CandidateSession
-from .filesystem_security import ensure_private_directory
+from .filesystem_security import ensure_private_directory, open_trusted_directory
 from .instance_lock import InstanceLock
 from .repositories import CandidateRepository, RateLimitEventRepository
 from .resume_service import RuntimePollCycle
@@ -17,6 +18,18 @@ from .runtime_logging import SanitizedLogger
 from .scheduling import next_boundary
 from .selection import InMemorySelectionStore
 from .session_metadata import SessionMetadataResolver
+
+
+def _project_directory_available(path: Path) -> bool:
+    descriptor = -1
+    try:
+        descriptor = open_trusted_directory(path)
+        return True
+    except (OSError, UnicodeError, ValueError):
+        return False
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
 
 
 @dataclass(frozen=True)
@@ -65,8 +78,13 @@ def read_only_dry_run(data_root: Path, now: datetime) -> DryRunReport:
     candidates_root = data_root / "candidates"
     rate_limits_root = data_root / "rate_limits"
     candidate_repository = CandidateRepository(candidates_root, repair_permissions=False)
-    candidates = candidate_repository.list_candidates(now=now)
-    known_session_ids = {candidate.session_id for candidate in candidates}
+    candidate_records = candidate_repository.list_candidates(now=now)
+    known_candidate_session_ids = {candidate.session_id for candidate in candidate_records}
+    candidates = [
+        candidate
+        for candidate in candidate_records
+        if _project_directory_available(candidate.project_path)
+    ]
     event_repository = RateLimitEventRepository(rate_limits_root, repair_permissions=False)
     events = event_repository.list_events(now=now)
     ambiguous_session_ids = (
@@ -74,7 +92,12 @@ def read_only_dry_run(data_root: Path, now: datetime) -> DryRunReport:
         | event_repository.ambiguous_session_ids
     )
     for event in events:
-        if event.session_id in known_session_ids or event.session_id in ambiguous_session_ids:
+        if not _project_directory_available(event.project_path):
+            continue
+        if (
+            event.session_id in known_candidate_session_ids
+            or event.session_id in ambiguous_session_ids
+        ):
             continue
         candidates.append(
             CandidateSession(
@@ -146,8 +169,13 @@ class ApplicationRuntime:
 
     def candidates(self, now: datetime):
         candidate_repository = CandidateRepository(self.candidates_root)
-        candidates = candidate_repository.list_candidates(now=now)
-        known_session_ids = {candidate.session_id for candidate in candidates}
+        candidate_records = candidate_repository.list_candidates(now=now)
+        known_candidate_session_ids = {candidate.session_id for candidate in candidate_records}
+        candidates = [
+            candidate
+            for candidate in candidate_records
+            if _project_directory_available(candidate.project_path)
+        ]
         event_repository = RateLimitEventRepository(self.rate_limits_root)
         events = event_repository.list_events(now=now)
         ambiguous_session_ids = (
@@ -155,8 +183,10 @@ class ApplicationRuntime:
             | event_repository.ambiguous_session_ids
         )
         for event in events:
+            if not _project_directory_available(event.project_path):
+                continue
             if (
-                event.session_id in known_session_ids
+                event.session_id in known_candidate_session_ids
                 or event.session_id in ambiguous_session_ids
             ):
                 continue

@@ -1,6 +1,6 @@
 ---
 id: GUIDE-hook-setup
-updated_at: 2026-08-09
+updated_at: 2026-08-11
 source_issues: []
 source_workstreams:
   - WS-20260721-mvp-integration
@@ -24,7 +24,7 @@ command substitutions, or other shell syntax.
 
 ## Safety Boundary
 
-The generator never reads or edits existing Claude settings. The Hook writer creates candidate records for session/activity events, creates a rate-limit record only for `StopFailure`, and removes the candidate record on session end unless the matching rate-limit record exists. New records are stored in account-scoped directories under `candidates/{main,alias,unknown}/` and `rate_limits/{main,alias,unknown}/`; the scope and optional JSON label must agree. Local records contain the session ID and absolute project path required by the runtime; operational logs and diagnostic output do not echo those values.
+The generator never reads or edits existing Claude settings. The Hook writer creates candidate records for session/activity events, creates a rate-limit record only for `StopFailure`, and removes the candidate record on session end only when ownership is established or the record is in the `unknown`/legacy namespace. An account-unlabeled `SessionEnd` never removes `main` or `alias` candidates, and matching rate-limit records are preserved. New records are stored in account-scoped directories under `candidates/{main,alias,unknown}/` and `rate_limits/{main,alias,unknown}/`; the scope and optional JSON label must agree. Local records contain the session ID and absolute project path required by the runtime; operational logs and diagnostic output do not echo those values.
 
 For two isolated Claude Code configurations, merge the `main` fragment into `~/.claude/settings.json` and the `alias` fragment into `~/.claude-seat2/settings.json`. The runtime uses the explicit `~/.claude-seat2` path for the alias account and does not execute a login shell to discover it. The shell wrapper must set `CLAUDE_CONFIG_DIR=~/.claude-seat2` before invoking Claude Code; a label in settings alone does not change the authenticated account. When multiple Claude installations exist, call the same verified executable explicitly in both wrappers rather than relying on PATH order; otherwise an older installation can select retired model IDs.
 
@@ -34,6 +34,10 @@ Both the rate-limit event and its candidate snapshot must carry the same
 allowlisted account label before a resume can be launched. Unlabeled legacy
 records remain inspectable but are never treated as an account authorization;
 they require a fresh account-labeled Hook event.
+
+The resume and lifecycle spike scripts further reduce Claude stream data to
+presence flags, fixed classifications, booleans, and counts. They never print
+Claude-provided labels, paths, IDs, or digests.
 
 ## Verification and Removal
 

@@ -135,7 +135,7 @@ def _custom_title_at(directory_fd: int, filename: str) -> str | None:
                 title = value.get("customTitle") if isinstance(value, dict) else None
                 if isinstance(title, str) and title.strip():
                     return title
-    except (OSError, UnicodeError, json.JSONDecodeError):
+    except (OSError, UnicodeError, json.JSONDecodeError, RecursionError):
         return None
     finally:
         if descriptor >= 0:

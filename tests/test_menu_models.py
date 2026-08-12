@@ -132,6 +132,39 @@ class MenuModelTests(unittest.TestCase):
             self.assertFalse(disabled.session_rows[0].checked)
             self.assertEqual(runtime.calls, [("activate", "session-toggle"), ("deactivate", "session-toggle")])
 
+    def test_controller_ignores_project_disappearing_before_activation(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            candidate = CandidateSession(
+                1,
+                "candidate",
+                "session-disappeared",
+                root,
+                datetime(2026, 7, 21, 12, tzinfo=UTC),
+                "title",
+                "project",
+                account_name="main",
+            )
+
+            class FakeRuntime:
+                def __init__(self):
+                    self.selection_store = InMemorySelectionStore()
+
+                def candidates(self, now):
+                    return (candidate,)
+
+                def activate(self, session_id, now):
+                    raise FileNotFoundError(session_id)
+
+                def deactivate(self, session_id, account_name=None):
+                    del session_id, account_name
+
+            controller = MenuController(FakeRuntime(), clock=lambda: candidate.updated_at)
+
+            state = controller.toggle("session-disappeared")
+
+            self.assertFalse(state.session_rows[0].checked)
+
     def test_selectable_rows_exclude_candidates_without_human_metadata(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

@@ -69,6 +69,128 @@ class AppShellTests(unittest.TestCase):
             self.assertEqual(candidates[0].account_name, "alias")
             self.assertEqual(candidates[0].session_id, session_id)
 
+    def test_candidates_do_not_reconstruct_deleted_project(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "candidates").mkdir(mode=0o700)
+            rate_limits = root / "rate_limits"
+            rate_limits.mkdir(mode=0o700)
+            (rate_limits / "alias").mkdir(mode=0o700)
+            session_id = "session-deleted-project"
+            (rate_limits / "alias" / f"{session_key(session_id)}.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "record_type": "rate_limit",
+                        "reason": "rate_limit",
+                        "session_id": session_id,
+                        "project_path": str(root / "deleted-project"),
+                        "updated_at": "2026-07-21T11:59:00+00:00",
+                        "account_name": "alias",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            candidates = ApplicationRuntime(root).candidates(
+                datetime(2026, 7, 21, 12, tzinfo=UTC)
+            )
+
+            self.assertEqual(candidates, ())
+
+    def test_candidates_do_not_reconstruct_symlinked_project(self):
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as temp_dir:
+            root = Path(temp_dir)
+            (root / "candidates").mkdir(mode=0o700)
+            rate_limits = root / "rate_limits"
+            rate_limits.mkdir(mode=0o700)
+            (rate_limits / "alias").mkdir(mode=0o700)
+            project = root / "project"
+            project.mkdir(mode=0o700)
+            project_link = root / "project-link"
+            project_link.symlink_to(project, target_is_directory=True)
+            session_id = "session-symlink-project"
+            (rate_limits / "alias" / f"{session_key(session_id)}.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "record_type": "rate_limit",
+                        "reason": "rate_limit",
+                        "session_id": session_id,
+                        "project_path": str(project_link),
+                        "updated_at": "2026-07-21T11:59:00+00:00",
+                        "account_name": "alias",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            candidates = ApplicationRuntime(root).candidates(
+                datetime(2026, 7, 21, 12, tzinfo=UTC)
+            )
+
+            self.assertEqual(candidates, ())
+
+    def test_unavailable_candidate_blocks_same_id_event_reconstruction(self):
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as temp_dir:
+            root = Path(temp_dir)
+            candidates = root / "candidates" / "main"
+            events = root / "rate_limits" / "main"
+            candidates.mkdir(parents=True, mode=0o700)
+            events.mkdir(parents=True, mode=0o700)
+            session_id = "session-unavailable-candidate"
+            candidate = {
+                "schema_version": 1,
+                "record_type": "candidate",
+                "session_id": session_id,
+                "project_path": str(root / "deleted-project"),
+                "updated_at": "2026-07-21T11:59:00+00:00",
+                "account_name": "main",
+            }
+            event = {
+                **candidate,
+                "record_type": "rate_limit",
+                "reason": "rate_limit",
+                "project_path": str(root),
+            }
+            key = session_key(session_id)
+            (candidates / f"{key}.json").write_text(json.dumps(candidate), encoding="utf-8")
+            (events / f"{key}.json").write_text(json.dumps(event), encoding="utf-8")
+
+            runtime = ApplicationRuntime(root)
+            try:
+                self.assertEqual(
+                    runtime.candidates(datetime(2026, 7, 21, 12, tzinfo=UTC)), ()
+                )
+            finally:
+                runtime.close()
+
+    def test_malformed_project_path_is_ignored_without_runtime_crash(self):
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as temp_dir:
+            root = Path(temp_dir)
+            candidates = root / "candidates" / "main"
+            candidates.mkdir(parents=True, mode=0o700)
+            session_id = "session-malformed-project"
+            payload = {
+                "schema_version": 1,
+                "record_type": "candidate",
+                "session_id": session_id,
+                "project_path": f"{root}\ud800",
+                "updated_at": "2026-07-21T11:59:00+00:00",
+                "account_name": "main",
+            }
+            (candidates / f"{session_key(session_id)}.json").write_text(
+                json.dumps(payload), encoding="utf-8"
+            )
+
+            runtime = ApplicationRuntime(root)
+            try:
+                self.assertEqual(
+                    runtime.candidates(datetime(2026, 7, 21, 12, tzinfo=UTC)), ()
+                )
+            finally:
+                runtime.close()
+
     def test_startup_initializes_directories_cleans_events_and_computes_next_boundary(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

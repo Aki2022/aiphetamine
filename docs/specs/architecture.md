@@ -869,7 +869,7 @@ WAITING条件:
 - 有効状態確認
 - 削除
 
-LaunchAgent managerは、保存済みのPython、アプリのエントリーポイント、設定パスの絶対パスからplistを一時ファイルへ生成し、原子的に置換する。LaunchAgentの登録・解除やON/OFFのUI操作は提供せず、利用者が手動で行う。
+LaunchAgent managerは、所有者と非書込の祖先を持つ実在のPython実行ファイルと、symlinkでない通常ファイルのエントリーポイントだけを受け付け、plistを一時ファイルへ生成し、原子的に置換する。既存の`~/Library/LaunchAgents`ルートの権限は変更せず、登録・解除やON/OFFのUI操作は提供せず、利用者が手動で行う。
 
 登録解除や専用plistの削除は手動の運用境界であり、アプリは生成済みplistの存在だけを確認する。
 

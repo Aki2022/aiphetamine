@@ -96,6 +96,12 @@ use `~/.claude-seat2` as that account's `CLAUDE_CONFIG_DIR`.
 
 See [docs/guides/hook-setup.md](docs/guides/hook-setup.md) for the safety
 boundary and removal procedure. The generator never edits existing settings.
+An account-unlabeled `SessionEnd` cannot prove which account owns a session, so
+it never removes `main` or `alias` candidates; it may remove only the
+`unknown` or legacy flat namespace. Matching rate-limit records are preserved.
+The resume and lifecycle spike scripts report only presence flags, fixed
+classifications, booleans, and counts; they do not print Claude-provided
+labels, paths, IDs, or digests.
 
 ## Running the menu-bar source tree
 

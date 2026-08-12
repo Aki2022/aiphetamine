@@ -51,4 +51,4 @@ class ResumeLaunchResult:
 
 
 def session_key(session_id: str) -> str:
-    return hashlib.sha256(session_id.encode("utf-8")).hexdigest()
+    return hashlib.sha256(session_id.encode("utf-8", errors="surrogatepass")).hexdigest()

@@ -9,6 +9,12 @@ from pathlib import Path
 
 
 def _absolute(path: Path) -> Path:
+    raw_path = Path(os.fspath(path))
+    if ".." in raw_path.parts:
+        # Do not collapse parent components before O_NOFOLLOW validation: a
+        # symlink followed by ``..`` has different kernel semantics from the
+        # lexical path and can otherwise escape the checked directory.
+        raise OSError("parent_traversal_not_allowed")
     absolute = Path(os.path.abspath(os.fspath(path)))
     # macOS exposes these root-owned system directories through symlinks.  The
     # aliases are fixed platform boundaries, so normalize only the exact
@@ -131,6 +137,18 @@ def ensure_private_directory(path: Path) -> Path:
     return path
 
 
+def ensure_trusted_directory(path: Path) -> Path:
+    """Create a directory if needed without changing an existing mode."""
+
+    path = _absolute(path)
+    _check_no_symlink_components(path)
+    path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    _check_no_symlink_components(path)
+    fd = _open_trusted_directory(path)
+    os.close(fd)
+    return path
+
+
 def is_secure_account_directory(path: Path) -> bool:
     """Return whether an existing account root is private and non-symlinked."""
 
@@ -230,10 +248,37 @@ def validate_external_executable(path: Path) -> bool:
     descriptor = -1
     try:
         descriptor = open_verified_executable(path)
-    except OSError:
+    except (OSError, ValueError):
         return False
     os.close(descriptor)
     return True
+
+
+def validate_external_entrypoint(path: Path) -> bool:
+    """Validate a non-executable script passed as a Python entrypoint."""
+
+    descriptor = -1
+    try:
+        path = _absolute(path)
+        parent_fd = _open_trusted_directory(path.parent, leaf_owner_current=False)
+        try:
+            flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+            descriptor = os.open(path.name, flags, dir_fd=parent_fd)
+            file_stat = os.fstat(descriptor)
+            if not (
+                stat.S_ISREG(file_stat.st_mode)
+                and _owner_is_trusted(file_stat, allow_root_owner=True)
+                and not stat.S_IMODE(file_stat.st_mode) & 0o022
+            ):
+                return False
+            return True
+        finally:
+            os.close(parent_fd)
+    except (OSError, ValueError):
+        return False
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
 
 
 def open_verified_executable(path: Path) -> int:
@@ -258,11 +303,16 @@ def open_verified_executable(path: Path) -> int:
         os.close(parent_fd)
 
 
-def atomic_write_bytes(target: Path, payload: bytes) -> None:
+def atomic_write_bytes(
+    target: Path, payload: bytes, *, repair_parent_permissions: bool = True
+) -> None:
     """Write a managed file atomically using one stable directory descriptor."""
 
     target = _absolute(target)
-    ensure_private_directory(target.parent)
+    if repair_parent_permissions:
+        ensure_private_directory(target.parent)
+    else:
+        ensure_trusted_directory(target.parent)
     parent_fd = _open_trusted_directory(target.parent, leaf_owner_current=True)
     temporary_name: str | None = None
     descriptor = -1

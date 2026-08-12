@@ -58,5 +58,11 @@ class MenuController:
         if self._runtime.selection_store.is_selected(session_id, account_name):
             self._runtime.deactivate(session_id, account_name)
         else:
-            self._runtime.activate(session_id, now)
+            try:
+                self._runtime.activate(session_id, now)
+            except (LookupError, OSError):
+                # The project or candidate may disappear between menu refresh
+                # and the click. Keep the menu process alive and refresh the
+                # row instead of surfacing a filesystem exception to AppKit.
+                pass
         return self.refresh()

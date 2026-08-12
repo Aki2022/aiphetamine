@@ -20,9 +20,14 @@ from scripts.run_resume_spike import (  # noqa: E402
     _collect_safe_records,
     build_resume_command,
     classify_error,
+    run as run_resume_spike,
 )
 from hooks.capture_candidate_lifecycle import process_lifecycle_payload  # noqa: E402
-from scripts.run_candidate_lifecycle_spike import build_lifecycle_command  # noqa: E402
+from scripts.run_candidate_lifecycle_spike import (  # noqa: E402
+    _read_manifest,
+    build_lifecycle_command,
+    run as run_lifecycle_spike,
+)
 
 
 def make_valid_payload() -> dict[str, object]:
@@ -142,6 +147,16 @@ class HookPayloadValidationTests(unittest.TestCase):
         self.assertEqual(first["session_id_digest"], second["session_id_digest"])
         self.assertNotIn(make_valid_payload()["session_id"], json.dumps(first))
 
+    def test_redaction_rejects_unencodable_session_id_without_traceback(self) -> None:
+        payload = make_valid_payload()
+        payload["session_id"] = "\ud800"
+
+        with patch.dict("os.environ", {"AIPHEMETINE_CAPTURE_SALT": "test-salt"}):
+            redacted = redact_hook_payload(payload)
+
+        self.assertTrue(redacted["accepted"])
+        self.assertNotIn("session_id_digest", redacted)
+
     def test_resume_command_uses_fixed_message_verbose_and_no_shell_flag(self) -> None:
         command = build_resume_command(
             "/usr/bin/claude",
@@ -180,11 +195,38 @@ class HookPayloadValidationTests(unittest.TestCase):
             records,
         )
 
-        self.assertEqual(stream_types, {"result"})
+        self.assertEqual(stream_types, {"present"})
         self.assertEqual(records, [{"is_error": True, "result_error_class": "resume_session"}])
         serialized = json.dumps(records)
         self.assertNotIn("secret-session-id", serialized)
         self.assertNotIn("private/path", serialized)
+
+    def test_resume_collector_never_emits_untrusted_labels_or_digest_values(self) -> None:
+        stream_types: set[str] = set()
+        hook_names: set[str] = set()
+        records: list[dict[str, object]] = []
+
+        _collect_safe_records(
+            {
+                "type": "arbitrary-stream-secret",
+                "hook_event_name": "arbitrary-hook-secret",
+                "session_id_digest": "arbitrary-digest-secret",
+                "error_code": "arbitrary-error-secret",
+            },
+            stream_types,
+            hook_names,
+            records,
+        )
+
+        serialized = json.dumps(
+            {"stream_types": sorted(stream_types), "hook_names": sorted(hook_names), "records": records}
+        )
+        self.assertEqual(stream_types, {"present"})
+        self.assertEqual(hook_names, {"present"})
+        self.assertNotIn("arbitrary-stream-secret", serialized)
+        self.assertNotIn("arbitrary-hook-secret", serialized)
+        self.assertNotIn("arbitrary-digest-secret", serialized)
+        self.assertNotIn("arbitrary-error-secret", serialized)
 
     def test_candidate_lifecycle_creates_refreshes_and_removes_safe_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -230,6 +272,123 @@ class HookPayloadValidationTests(unittest.TestCase):
             set(settings["hooks"]),
             {"SessionStart", "UserPromptSubmit", "Stop", "SessionEnd"},
         )
+
+    def test_lifecycle_manifest_classifies_untrusted_revision_without_echoing_it(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            Path(directory, "lifecycle.jsonl").write_text(
+                json.dumps(
+                    {
+                        "event_class": "SessionStart",
+                        "action": "upsert",
+                        "revision": 987654321,
+                        "accepted": True,
+                        "candidate_exists_after": True,
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            records = _read_manifest(Path(directory))
+
+            serialized = json.dumps(records)
+            self.assertEqual(records[0]["revision_class"], "invalid")
+            self.assertNotIn("987654321", serialized)
+
+    def test_lifecycle_manifest_rejects_untyped_fields_without_traceback(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            Path(directory, "lifecycle.jsonl").write_text(
+                json.dumps(
+                    {
+                        "event_class": [],
+                        "action": {},
+                        "error_code": [],
+                        "revision": {},
+                        "accepted": [],
+                        "candidate_exists_after": {},
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            records = _read_manifest(Path(directory))
+
+            self.assertEqual(
+                records,
+                [
+                    {
+                        "event_class": "other",
+                        "action": "other",
+                        "accepted": False,
+                        "error_code_class": "none",
+                        "revision_class": "invalid",
+                        "candidate_exists_after": False,
+                    }
+                ],
+            )
+
+    def test_lifecycle_manifest_ignores_invalid_utf8_without_traceback(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            Path(directory, "lifecycle.jsonl").write_bytes(b"\xff\xfe\n")
+
+            self.assertEqual(_read_manifest(Path(directory)), [])
+
+    def test_resume_collector_stops_at_a_safe_nesting_depth(self) -> None:
+        value: object = None
+        for _ in range(1100):
+            value = [value]
+        stream_types: set[str] = set()
+        hook_names: set[str] = set()
+        records: list[dict[str, object]] = []
+
+        _collect_safe_records(value, stream_types, hook_names, records)
+
+        self.assertEqual(records, [])
+
+    def test_resume_spike_classifies_launch_error_without_echoing_path(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output = io.StringIO()
+            with patch.dict(
+                "os.environ",
+                {
+                    "AIPHEMETINE_RESUME_SESSION_ID": "fixture-session",
+                    "AIPHEMETINE_RESUME_CWD": directory,
+                    "AIPHEMETINE_ORIGINAL_PROCESS_PRESENT": "false",
+                    "AIPHEMETINE_CLAUDE_EXECUTABLE": "/private/tmp/review-secret-path/claude",
+                },
+            ), patch(
+                "scripts.run_resume_spike.subprocess.run",
+                side_effect=FileNotFoundError(2, "No such file", "/private/tmp/review-secret-path/claude"),
+            ), patch("sys.stdout", output):
+                exit_code = run_resume_spike()
+
+            self.assertEqual(exit_code, 1)
+            self.assertIn("claude_exit=launch_error", output.getvalue())
+            self.assertIn("error_class=executable_or_hook_not_found", output.getvalue())
+            self.assertNotIn("review-secret-path", output.getvalue())
+            self.assertNotIn("Errno 2", output.getvalue())
+
+    def test_lifecycle_spike_classifies_launch_error_without_echoing_path(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output = io.StringIO()
+            with patch.dict(
+                "os.environ",
+                {
+                    "AIPHEMETINE_LIFECYCLE_CWD": directory,
+                    "AIPHEMETINE_CLAUDE_EXECUTABLE": "/private/tmp/review-secret-path/claude",
+                },
+            ), patch(
+                "scripts.run_candidate_lifecycle_spike.subprocess.run",
+                side_effect=FileNotFoundError(2, "No such file", "/private/tmp/review-secret-path/claude"),
+            ), patch("sys.stdout", output):
+                exit_code = run_lifecycle_spike()
+
+            self.assertEqual(exit_code, 1)
+            self.assertIn("claude_exit=launch_error", output.getvalue())
+            self.assertIn("error_class=executable_or_hook_not_found", output.getvalue())
+            self.assertNotIn("review-secret-path", output.getvalue())
+            self.assertNotIn("Errno 2", output.getvalue())
 
 
 if __name__ == "__main__":

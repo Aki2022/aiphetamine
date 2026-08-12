@@ -36,6 +36,19 @@ def apply_event(payload: dict[str, Any], event: str, data_root: Path, now: datet
     cwd = payload.get("cwd")
     if not isinstance(session_id, str) or not session_id or not isinstance(cwd, str):
         return "invalid_payload"
+    try:
+        session_id.encode("utf-8")
+    except UnicodeError:
+        # Reject lone surrogates before deriving a filesystem key or writing
+        # JSON. They can arrive through malformed JSON and are not valid UTF-8
+        # data for a local record.
+        return "invalid_payload"
+    try:
+        cwd.encode("utf-8")
+    except UnicodeError:
+        return "invalid_payload"
+    if "\x00" in cwd:
+        return "invalid_payload"
     project_path = Path(cwd)
     if not project_path.is_absolute():
         return "invalid_payload"
@@ -120,7 +133,9 @@ def _is_regular_file(path: Path) -> bool:
 
 
 def _atomic_write(target: Path, record: dict[str, Any]) -> None:
-    encoded = json.dumps(record, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    # ASCII escaping keeps malformed-but-parseable Unicode values from
+    # causing a UTF-8 encoding traceback in the Hook process.
+    encoded = json.dumps(record, ensure_ascii=True, sort_keys=True).encode("utf-8")
     atomic_write_bytes(target, encoded)
 
 
@@ -132,7 +147,7 @@ def main() -> int:
     args = parser.parse_args()
     try:
         payload = json.load(sys.stdin)
-    except (json.JSONDecodeError, OSError):
+    except (json.JSONDecodeError, OSError, RecursionError):
         print("invalid_payload", file=sys.stderr)
         return 0
     result = apply_event(payload if isinstance(payload, dict) else {}, args.event, args.data_root, datetime.now(UTC), args.account_name)

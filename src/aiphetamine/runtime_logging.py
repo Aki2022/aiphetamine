@@ -164,7 +164,9 @@ class SanitizedLogger:
         return self._handler.when
 
     def correlation_id(self, session_id: str) -> str:
-        digest = hashlib.sha256(self._salt + session_id.encode("utf-8")).hexdigest()
+        digest = hashlib.sha256(
+            self._salt + session_id.encode("utf-8", errors="surrogatepass")
+        ).hexdigest()
         return digest[:12]
 
     def record(

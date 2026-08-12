@@ -16,6 +16,7 @@ from aiphetamine.filesystem_security import (
     is_secure_account_directory,
     open_private_directory,
     read_private_text,
+    validate_external_entrypoint,
     validate_external_executable,
 )
 from aiphetamine.instance_lock import InstanceLock
@@ -107,7 +108,7 @@ class SecurityBoundaryTests(unittest.TestCase):
             target = launch_root / "local.aiphetamine.menubar.plist"
             target.symlink_to(outside)
 
-            with self.assertRaises(OSError):
+            with self.assertRaises((OSError, ValueError)):
                 LaunchAgentManager(launch_root).write_plist(
                     LaunchAgentSpec("/opt/python/bin/python3", "aiphetamine")
                 )
@@ -143,6 +144,22 @@ class SecurityBoundaryTests(unittest.TestCase):
 
             self.assertFalse(is_secure_account_directory(account))
             self.assertFalse(validate_external_executable(executable))
+
+    def test_executable_boundaries_reject_parent_traversal_after_symlink(self):
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as temp_dir:
+            root = Path(temp_dir)
+            safe = root / "safe"
+            safe.mkdir(mode=0o700)
+            target = root / "target"
+            target.mkdir(mode=0o700)
+            executable = target / "evil"
+            executable.write_text("#!/bin/sh\n", encoding="utf-8")
+            executable.chmod(0o700)
+            (safe / "link").symlink_to(target, target_is_directory=True)
+            traversal = safe / "link" / ".." / "evil"
+
+            self.assertFalse(validate_external_executable(traversal))
+            self.assertFalse(validate_external_entrypoint(traversal))
 
     def test_private_directory_rejects_filesystem_root(self):
         with self.assertRaises(OSError):

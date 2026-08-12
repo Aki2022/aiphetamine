@@ -75,6 +75,36 @@ class ProductionHookTests(unittest.TestCase):
                 "invalid_account_name",
             )
 
+    def test_hook_rejects_invalid_unicode_session_id_without_writing(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            payload = {"session_id": "bad\ud800", "cwd": str(root)}
+            now = datetime(2026, 7, 21, 12, tzinfo=UTC)
+
+            self.assertEqual(apply_event(payload, "SessionStart", root, now), "invalid_payload")
+            self.assertFalse((root / "candidates").exists())
+
+    def test_hook_escapes_invalid_unicode_metadata_without_traceback(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            payload = {"session_id": "safe", "cwd": str(root), "session_name": "bad\ud800"}
+            now = datetime(2026, 7, 21, 12, tzinfo=UTC)
+
+            self.assertEqual(apply_event(payload, "SessionStart", root, now), "written")
+            record = next((root / "candidates" / "unknown").glob("*.json"))
+            self.assertEqual(json.loads(record.read_text())["session_name"], "bad\ud800")
+
+    def test_hook_rejects_invalid_unicode_or_nul_cwd_without_writing(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            now = datetime(2026, 7, 21, 12, tzinfo=UTC)
+
+            for cwd in (f"{root}\ud800", f"{root}\x00bad"):
+                payload = {"session_id": "safe", "cwd": cwd}
+                self.assertEqual(apply_event(payload, "SessionStart", root, now), "invalid_payload")
+
+            self.assertFalse((root / "candidates").exists())
+
 
 if __name__ == "__main__":
     unittest.main()
