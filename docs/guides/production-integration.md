@@ -1,6 +1,6 @@
 ---
 id: GUIDE-production-integration
-updated_at: 2026-08-09
+updated_at: 2026-08-12
 source_issues: []
 source_workstreams:
   - WS-20260721-production-integration
@@ -10,6 +10,16 @@ related_specs:
 ---
 
 # Production Integration
+
+## Public Source Release
+
+The source repository is public. Do not commit local runtime data under
+`~/.local/share/aiphetamine/`, Claude configuration directories, credentials,
+tokens, transcripts, generated settings, or generated LaunchAgent files.
+Candidate and rate-limit records intentionally contain local session and
+project metadata for runtime use; those records must remain on the operator's
+machine. The public source boundary is documented in
+[ADR-20260812-public-source-release](../adrs/ADR-20260812-public-source-release.md).
 
 ## Applied Boundary
 

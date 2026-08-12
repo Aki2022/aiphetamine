@@ -3,9 +3,9 @@ schema_version: 2
 id: WS-20260721-resume-wiring
 status: active
 created_at: 2026-07-21
-updated_at: 2026-08-10
-branch: main
-pr: ""
+updated_at: 2026-08-12
+branch: agent/public-release-security-hardening
+pr: "https://github.com/Aki2022/aiphetamine/pull/1"
 human_boundary_confirmed_at: 2026-07-21
 next_human_gate: live-resume-verification
 related_specs:
@@ -238,6 +238,18 @@ Record only decisions that are difficult to reverse or surprising without contex
 
 - Completed in the source tree: interactive candidate/quit bindings, fixed-boundary scheduler integration, disabled-by-policy executor, and executable configuration validator. Owner-only configuration creation and LaunchAgent registration remain manual operator steps.
 - Final live-resume verification is intentionally outside the current release boundary; no live completion is claimed here.
+
+## Public Release Handoff
+
+- The user explicitly approved publication on 2026-08-12. The repository is
+  public and PR [#1](https://github.com/Aki2022/aiphetamine/pull/1) is open for
+  review; this closeout does not merge it.
+- An independent security review returned `PUBLISH`. It found no remaining
+  blocker for public source distribution after the malformed-input, symlink,
+  candidate-reconstruction, LaunchAgent, and sanitized-output hardening.
+- The public boundary excludes local runtime data, Claude credentials, tokens,
+  settings, transcripts, and generated configuration. Live resume and
+  LaunchAgent registration remain operator-controlled human gates.
 
 ## Verification
 
