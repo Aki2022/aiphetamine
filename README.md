@@ -44,6 +44,24 @@ environment-dependent and are not treated as guaranteed product behavior.
 No Claude credentials, tokens, or account identifiers belong in this
 repository.
 
+### Account directory permissions
+
+The runtime safety check accepts an account only when its Claude configuration
+directory is private to the current user:
+
+```bash
+chmod 700 ~/.claude ~/.claude-seat2
+chmod 600 ~/.local/share/aiphetamine/config.json
+```
+
+These commands do not grant special access to `python3`. They restrict the
+directories and configuration file to their owner; the menu-bar process and
+its LaunchAgent run as that same user. If one Claude directory is `755`,
+AIphetamine may still show candidate rows for that account, but refuses
+resume launches for that account while another secure account can continue to
+route normally. The Claude Code “trust this folder” prompt is a separate
+check.
+
 ## Verify locally
 
 From the repository root:
@@ -55,8 +73,8 @@ python3 scripts/run_dry_cycle.py
 ```
 
 The dry-run command reads local AIphetamine state and prints only sanitized
-counts. It does not launch Claude, modify settings, or persist selection state;
-it may create or update the local operational log directory.
+counts. It does not launch Claude, modify settings, create runtime directories,
+write logs, repair file permissions, or persist selection state.
 
 ## Hook setup
 
@@ -70,12 +88,20 @@ python3 scripts/generate_hook_config.py \
 ```
 
 Review the generated JSON and merge it manually into the intended Claude Code
-settings file. `--account-name` accepts only `main` or `alias`. For the second
+settings file. The generator parses the command into argv tokens, rejects shell
+metacharacters, and quotes each token before adding Hook arguments.
+`--account-name` accepts only `main` or `alias`. For the second
 isolated account, generate a separate fragment with `--account-name alias` and
 use `~/.claude-seat2` as that account's `CLAUDE_CONFIG_DIR`.
 
 See [docs/guides/hook-setup.md](docs/guides/hook-setup.md) for the safety
 boundary and removal procedure. The generator never edits existing settings.
+An account-unlabeled `SessionEnd` cannot prove which account owns a session, so
+it never removes `main` or `alias` candidates; it may remove only the
+`unknown` or legacy flat namespace. Matching rate-limit records are preserved.
+The resume and lifecycle spike scripts report only presence flags, fixed
+classifications, booleans, and counts; they do not print Claude-provided
+labels, paths, IDs, or digests.
 
 ## Running the menu-bar source tree
 

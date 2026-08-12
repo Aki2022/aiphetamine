@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
-import os
 import plistlib
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+
+from .filesystem_security import (
+    atomic_write_bytes,
+    ensure_private_file,
+    ensure_trusted_directory,
+    validate_external_entrypoint,
+    validate_external_executable,
+)
 
 
 LABEL = "local.aiphetamine.menubar"
@@ -31,12 +37,29 @@ class LaunchAgentManager:
         return self._root / PLIST_NAME
 
     def write_plist(self, spec: LaunchAgentSpec) -> Path:
+        if not isinstance(spec.python_executable, str) or "\x00" in spec.python_executable:
+            raise ValueError("invalid_launch_agent_spec")
         executable = Path(spec.python_executable)
-        if not executable.is_absolute() or not spec.module:
+        valid_module = (
+            isinstance(spec.module, str)
+            and bool(spec.module)
+            and all(part.isidentifier() for part in spec.module.split("."))
+        )
+        if (
+            not isinstance(spec.python_executable, str)
+            or "\x00" in spec.python_executable
+            or not executable.is_absolute()
+            or not valid_module
+            or not validate_external_executable(executable)
+        ):
             raise ValueError("invalid_launch_agent_spec")
         arguments = [str(executable), "-m", spec.module]
         if spec.entrypoint is not None:
-            if not spec.entrypoint.is_absolute():
+            if (
+                not isinstance(spec.entrypoint, Path)
+                or not spec.entrypoint.is_absolute()
+                or not validate_external_entrypoint(spec.entrypoint)
+            ):
                 raise ValueError("invalid_launch_agent_spec")
             arguments = [str(executable), str(spec.entrypoint)]
         payload = {
@@ -46,20 +69,15 @@ class LaunchAgentManager:
             "KeepAlive": False,
         }
         encoded = plistlib.dumps(payload, fmt=plistlib.FMT_XML, sort_keys=True)
-        self._root.mkdir(mode=0o700, parents=True, exist_ok=True)
-        descriptor, temporary_name = tempfile.mkstemp(prefix=f".{PLIST_NAME}.", dir=self._root)
-        temporary = Path(temporary_name)
-        try:
-            with os.fdopen(descriptor, "wb") as stream:
-                stream.write(encoded)
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.chmod(temporary, 0o600)
-            os.replace(temporary, self.plist_path)
-        finally:
-            if temporary.exists():
-                temporary.unlink(missing_ok=True)
+        ensure_trusted_directory(self._root)
+        ensure_private_file(self.plist_path)
+        atomic_write_bytes(self.plist_path, encoded, repair_parent_permissions=False)
         return self.plist_path
 
     def is_generated(self) -> bool:
+        try:
+            ensure_trusted_directory(self._root)
+            ensure_private_file(self.plist_path)
+        except OSError:
+            return False
         return self.plist_path.is_file() and not self.plist_path.is_symlink()

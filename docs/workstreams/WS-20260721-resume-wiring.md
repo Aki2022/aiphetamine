@@ -3,9 +3,9 @@ schema_version: 2
 id: WS-20260721-resume-wiring
 status: active
 created_at: 2026-07-21
-updated_at: 2026-08-09
-branch: main
-pr: ""
+updated_at: 2026-08-12
+branch: agent/public-release-security-hardening
+pr: "https://github.com/Aki2022/aiphetamine/pull/1"
 human_boundary_confirmed_at: 2026-07-21
 next_human_gate: live-resume-verification
 related_specs:
@@ -24,20 +24,20 @@ test_gates:
 required_reviewers: []
 subagent_plan:
   mode: parent-only
-  reason: "The menu and scheduler connect to the live LaunchAgent-owned process."
+  reason: "The menu and scheduler are wired in the source tree; LaunchAgent registration remains a manual operator step."
 ---
 
 # Resume Wiring
 
 ## Goal
 
-Wire the existing local eligibility and resume contracts into the running menu-bar application without launching Claude.
+Wire the existing local eligibility and resume contracts into the running menu-bar application while keeping every live launch behind an explicit selected, account-labeled session boundary.
 
 ## Success Criteria
 
 - Menu rows can toggle in-memory activation and Quit works.
-- One-shot AppKit scheduling invokes the local poll service through an injected, disabled-by-policy resume boundary.
-- A validated configured Claude executable is available to the resume adapter but is not launched in this workstream.
+- One-shot AppKit scheduling invokes the local poll service through an injected resume boundary.
+- A validated configured Claude executable is available to the account-routed resume adapter; the implementation is complete, while live operational launch remains limited to the separately gated verification issue.
 
 ## Authorization Envelope
 
@@ -106,11 +106,11 @@ Connect AppKit timers and background dispatch to the existing one-shot scheduler
 
 #### Current Status
 
-The running entry point starts the one-shot scheduler, uses a background worker, and routes polls through the validated account-routed executor. Invalid executable configuration still falls back to `DisabledResumeExecutor`.
+The source-tree entry point starts the one-shot scheduler, uses a background worker, and routes polls through the validated account-routed executor. Invalid executable configuration still falls back to `DisabledResumeExecutor`. A running LaunchAgent is not asserted by this workstream.
 
 #### Next Actions
 
-- Existing scheduler and executor tests pass; the LaunchAgent reports a running state after the safe reload.
+- Existing scheduler and executor tests pass; LaunchAgent registration and runtime state remain outside the source-tree release boundary.
 
 ### ISSUE-03-resume-configuration
 
@@ -139,11 +139,15 @@ The Hook/runtime boundary also preserves or reconstructs a candidate when `StopF
 
 Startup now preserves fresh valid rate-limit events and removes only stale or invalid artifacts, so reloading the menu does not discard the current natural verification event. See [ADR-20260809-preserve-fresh-rate-limits](../adrs/ADR-20260809-preserve-fresh-rate-limits.md).
 
+Unlabeled `SessionEnd` cleanup now preserves account-scoped candidates, and
+startup cleanup removes only `.tmp.` artifacts older than 24 hours so active
+Hook writes are not discarded. See [ADR-20260810-preserve-local-runtime-artifacts](../adrs/ADR-20260810-preserve-local-runtime-artifacts.md).
+
 Decision record: [ADR-20260809-account-routed-resume](../adrs/ADR-20260809-account-routed-resume.md).
 
 #### Next Actions
 
-- Restart the LaunchAgent, reselect the intended menu rows, and observe the next fixed boundary.
+- Generate and manually review the LaunchAgent plist before any operator-controlled registration; do not assume a registered or running LaunchAgent.
 
 ### ISSUE-06-live-resume-enablement
 
@@ -167,11 +171,11 @@ Enable the account-routed resume executor for sessions explicitly checked in the
 
 #### Current Status
 
-The operator approved live resume after confirming the menu rows. The executor and enriched candidate provider are implemented and unit-tested. The 02:00 JST boundary ran for the selected resident process and local diagnostics showed five rate-limit events completed while one older unmatched event remained. Because the menu previously exposed only selection state, the result was not visible to the operator; the menu now displays the latest poll boundary and aggregate statuses without private identifiers. The resident LaunchAgent was restarted with the operator's approval and is running the updated code; the remaining human check is to open the menu and confirm the summary, then reselect desired rows because selection is intentionally in memory only.
+The executor and enriched candidate provider are implemented and unit-tested. A historical operator confirmation of one live boundary is retained in the project history, but it is not a machine-readable or repeatable E2E guarantee. This workstream does not assert a currently registered or running LaunchAgent, and no new live resume is required for the source-tree release. The menu displays the latest poll boundary and aggregate statuses without private identifiers. Current security hardening additionally isolates account artifacts, refuses unlabeled or duplicate account evidence, and uses descriptor-relative no-follow file operations.
 
 #### Next Actions
 
-- Human checkpoint: reselect the intended rows, open the menu, and confirm the latest poll summary is visible. Do not trigger an additional Claude resume solely for this UI check.
+- Human checkpoint: if live operation is later approved, manually register the reviewed plist and then reselect rows; do not trigger an additional Claude resume solely for this documentation or UI check.
 
 ### ISSUE-04-wiring-handoff
 
@@ -187,11 +191,11 @@ Complete guides and the local verification handoff.
 
 #### Acceptance
 
-- All recorded gates pass and live launch remains disabled.
+- All recorded handoff gates pass and any live launch remains behind the explicit verification boundary.
 
 #### Current Status
 
-Configuration and all local verification are complete; the workstream is ready for human review.
+Configuration and the local handoff verification are complete; the historical disabled-by-policy handoff is distinct from ISSUE-06 live verification.
 
 #### Next Actions
 
@@ -232,16 +236,29 @@ Record only decisions that are difficult to reverse or surprising without contex
 
 ## Human Review Checkpoint
 
-- Completed: interactive candidate/quit bindings, fixed-boundary scheduler integration, disabled-by-policy executor, executable configuration validator, owner-only configuration creation, and one AIphetamine LaunchAgent restart.
-- Final live-resume verification is in progress after the operator's explicit approval.
+- Completed in the source tree: interactive candidate/quit bindings, fixed-boundary scheduler integration, disabled-by-policy executor, and executable configuration validator. Owner-only configuration creation and LaunchAgent registration remain manual operator steps.
+- Final live-resume verification is intentionally outside the current release boundary; no live completion is claimed here.
+
+## Public Release Handoff
+
+- The user explicitly approved publication on 2026-08-12. The repository is
+  public and PR [#1](https://github.com/Aki2022/aiphetamine/pull/1) is open for
+  review; this closeout does not merge it.
+- An independent security review returned `PUBLISH`. It found no remaining
+  blocker for public source distribution after the malformed-input, symlink,
+  candidate-reconstruction, LaunchAgent, and sanitized-output hardening.
+- The public boundary excludes local runtime data, Claude credentials, tokens,
+  settings, transcripts, and generated configuration. Live resume and
+  LaunchAgent registration remain operator-controlled human gates.
 
 ## Verification
 
-- `python3 -m unittest discover -s tests -v` passes 61 tests.
+- `python3 -m unittest discover -s tests -v` passes the repository test suite.
 - `python3 -m compileall -q src hooks scripts`, `git diff --check`, and the repository docs validator pass.
 - The runtime configuration is owner-only and its configured executable passes the read-only validator.
-- The LaunchAgent remains running after its one permitted restart.
-- The account-routed executor is live and the 02:00 JST boundary produced sanitized local evidence; the UI-result confirmation remains pending until the resident process is restarted with the status display.
+- The generated LaunchAgent plist is locally validated; registration and running state are not managed or asserted by the current source tree.
+- The account-routed executor is implemented and covered by local boundary tests; natural rate-limit and live Claude resume behavior remain unverified.
+- Account-scoped artifacts, duplicate-session ambiguity, malformed account metadata, shell assignment words, and descriptor-relative filesystem operations are covered by local tests.
 
 ## Completion
 

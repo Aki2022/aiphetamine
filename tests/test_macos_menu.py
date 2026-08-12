@@ -48,8 +48,8 @@ class AppKitMenuTests(unittest.TestCase):
                 def activate(self, session_id, now):
                     self.selection_store.activate(candidate, now)
 
-                def deactivate(self, session_id):
-                    self.selection_store.deactivate(session_id)
+                def deactivate(self, session_id, account_name=None):
+                    self.selection_store.deactivate(session_id, account_name)
 
             AppKit.NSApplication.sharedApplication()
             adapter = AppKitMenuBarAdapter(

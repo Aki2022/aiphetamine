@@ -39,6 +39,8 @@ class ResumeRequest:
     project_path: Path
     message: str = "Continue"
     account_name: str | None = None
+    expected_project_device: int | None = None
+    expected_project_inode: int | None = None
 
 
 @dataclass(frozen=True)
@@ -49,4 +51,4 @@ class ResumeLaunchResult:
 
 
 def session_key(session_id: str) -> str:
-    return hashlib.sha256(session_id.encode("utf-8")).hexdigest()
+    return hashlib.sha256(session_id.encode("utf-8", errors="surrogatepass")).hexdigest()

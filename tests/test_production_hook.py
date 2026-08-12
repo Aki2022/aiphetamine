@@ -30,10 +30,10 @@ class ProductionHookTests(unittest.TestCase):
 
             self.assertEqual(apply_event(payload, "SessionStart", root, now), "written")
             self.assertEqual(apply_event(payload, "StopFailure", root, now, "alias"), "written")
-            rate_limit_record = next((root / "rate_limits").glob("*.json"))
+            rate_limit_record = next((root / "rate_limits" / "alias").glob("*.json"))
             self.assertEqual(json.loads(rate_limit_record.read_text())["account_name"], "alias")
-            self.assertTrue((root / "candidates" / f"{key}.json").exists())
-            self.assertTrue((root / "rate_limits" / f"{key}.json").exists())
+            self.assertTrue((root / "candidates" / "unknown" / f"{key}.json").exists())
+            self.assertTrue((root / "rate_limits" / "alias" / f"{key}.json").exists())
 
     def test_hook_preserves_candidate_when_rate_limit_event_exists_at_session_end(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -47,7 +47,22 @@ class ProductionHookTests(unittest.TestCase):
             self.assertEqual(
                 apply_event(payload, "SessionEnd", root, now), "preserved_for_rate_limit"
             )
-            self.assertTrue((root / "candidates" / f"{key}.json").exists())
+            self.assertTrue((root / "candidates" / "alias" / f"{key}.json").exists())
+
+    def test_unlabeled_session_end_does_not_delete_account_scoped_candidates(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            payload = {"session_id": "session-ambiguous-end", "cwd": str(root)}
+            now = datetime(2026, 7, 21, 12, tzinfo=UTC)
+            key = session_key(payload["session_id"])
+
+            self.assertEqual(apply_event(payload, "SessionStart", root, now, "main"), "written")
+            self.assertEqual(apply_event(payload, "SessionStart", root, now, "alias"), "written")
+            self.assertEqual(
+                apply_event(payload, "SessionEnd", root, now), "preserved_unlabeled"
+            )
+            self.assertTrue((root / "candidates" / "main" / f"{key}.json").exists())
+            self.assertTrue((root / "candidates" / "alias" / f"{key}.json").exists())
 
     def test_hook_rejects_unallowlisted_account_name(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -59,6 +74,36 @@ class ProductionHookTests(unittest.TestCase):
                 apply_event(payload, "SessionStart", root, now, "main; touch /tmp/marker"),
                 "invalid_account_name",
             )
+
+    def test_hook_rejects_invalid_unicode_session_id_without_writing(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            payload = {"session_id": "bad\ud800", "cwd": str(root)}
+            now = datetime(2026, 7, 21, 12, tzinfo=UTC)
+
+            self.assertEqual(apply_event(payload, "SessionStart", root, now), "invalid_payload")
+            self.assertFalse((root / "candidates").exists())
+
+    def test_hook_escapes_invalid_unicode_metadata_without_traceback(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            payload = {"session_id": "safe", "cwd": str(root), "session_name": "bad\ud800"}
+            now = datetime(2026, 7, 21, 12, tzinfo=UTC)
+
+            self.assertEqual(apply_event(payload, "SessionStart", root, now), "written")
+            record = next((root / "candidates" / "unknown").glob("*.json"))
+            self.assertEqual(json.loads(record.read_text())["session_name"], "bad\ud800")
+
+    def test_hook_rejects_invalid_unicode_or_nul_cwd_without_writing(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            now = datetime(2026, 7, 21, 12, tzinfo=UTC)
+
+            for cwd in (f"{root}\ud800", f"{root}\x00bad"):
+                payload = {"session_id": "safe", "cwd": cwd}
+                self.assertEqual(apply_event(payload, "SessionStart", root, now), "invalid_payload")
+
+            self.assertFalse((root / "candidates").exists())
 
 
 if __name__ == "__main__":

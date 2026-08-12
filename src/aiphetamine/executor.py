@@ -3,22 +3,434 @@
 from __future__ import annotations
 
 import subprocess
+import ctypes
 from dataclasses import dataclass
+import hashlib
 import os
 from pathlib import Path
+import signal
+import sys
+import tempfile
 from typing import Callable, Mapping
 
 from .domain import ResumeLaunchResult, ResumeRequest
+from .filesystem_security import (
+    open_private_directory,
+    open_trusted_directory,
+    open_verified_executable,
+)
+
+
+_UF_IMMUTABLE = 0x00000002
 
 
 @dataclass(frozen=True)
 class ResumeCommandSpec:
     args: tuple[str, ...]
     cwd: Path
-    shell: bool = False
-    start_new_session: bool = True
-    devnull_streams: bool = True
     environment: Mapping[str, str] | None = None
+    expected_cwd_device: int | None = None
+    expected_cwd_inode: int | None = None
+
+    @property
+    def shell(self) -> bool:
+        return False
+
+    @property
+    def start_new_session(self) -> bool:
+        return True
+
+    @property
+    def devnull_streams(self) -> bool:
+        return True
+
+
+class _PosixSpawnProcess:
+    """Small Popen-compatible wait handle for the macOS posix_spawn path."""
+
+    def __init__(self, pid: int, cleanup: Callable[[], None] | None = None) -> None:
+        self.pid = pid
+        self._returncode: int | None = None
+        self._cleanup = cleanup
+
+    def wait(self) -> int:
+        if self._returncode is not None:
+            return self._returncode
+        while True:
+            try:
+                _, status = os.waitpid(self.pid, 0)
+                self._returncode = os.waitstatus_to_exitcode(status)
+                if self._cleanup is not None:
+                    self._cleanup()
+                    self._cleanup = None
+                return self._returncode
+            except InterruptedError:
+                continue
+
+
+_CHILD_BOUNDARY_CHECK = r'''
+import os
+import sys
+
+config_path = sys.argv[1]
+config_device = int(sys.argv[2])
+config_inode = int(sys.argv[3])
+project_path = sys.argv[4]
+project_device = int(sys.argv[5])
+project_inode = int(sys.argv[6])
+claude_path = sys.argv[7]
+claude_digest = sys.argv[8]
+UF_IMMUTABLE = 0x00000002
+
+def same_path(path, device, inode):
+    stat_result = os.stat(path, follow_symlinks=False)
+    return (stat_result.st_dev, stat_result.st_ino) == (device, inode)
+
+def digest(path):
+    descriptor = os.open(
+        path,
+        os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
+    )
+    try:
+        file_stat = os.fstat(descriptor)
+        path_stat = os.stat(path, follow_symlinks=False)
+        if (
+            path_stat.st_dev,
+            path_stat.st_ino,
+        ) != (
+            file_stat.st_dev,
+            file_stat.st_ino,
+        ) or (
+            file_stat.st_mode & 0o170000 != 0o100000
+            or file_stat.st_mode & 0o022
+            or not getattr(file_stat, "st_flags", 0) & UF_IMMUTABLE
+        ):
+            raise OSError("unsafe_executable_snapshot")
+        hasher = __import__("hashlib").sha256()
+        with os.fdopen(descriptor, "rb") as stream:
+            descriptor = -1
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                hasher.update(chunk)
+        return hasher.hexdigest()
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+try:
+    if os.environ.get("CLAUDE_CONFIG_DIR") != config_path:
+        if config_path:
+            raise OSError("unsafe_account_directory")
+    if config_path and not same_path(config_path, config_device, config_inode):
+        raise OSError("unsafe_account_directory")
+    if not same_path(project_path, project_device, project_inode):
+        raise OSError("unsafe_project_directory")
+    current_directory = os.open(
+        ".", os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    )
+    try:
+        current_stat = os.fstat(current_directory)
+        if (current_stat.st_dev, current_stat.st_ino) != (project_device, project_inode):
+            raise OSError("unsafe_project_directory")
+    finally:
+        os.close(current_directory)
+    if digest(claude_path) != claude_digest:
+        raise OSError("unsafe_executable_snapshot")
+    os.execve(claude_path, [claude_path, *sys.argv[9:]], os.environ)
+except BaseException:
+    os._exit(125)
+'''
+
+
+def _copy_executable_snapshot(source_fd: int, target: Path) -> str:
+    """Copy the already-open executable into a private, read-only staging file."""
+
+    duplicate_fd = os.dup(source_fd)
+    snapshot_fd = -1
+    try:
+        before = os.fstat(duplicate_fd)
+        os.lseek(duplicate_fd, 0, os.SEEK_SET)
+        with os.fdopen(duplicate_fd, "rb") as source:
+            duplicate_fd = -1
+            payload = source.read()
+            after = os.fstat(source.fileno())
+        if (
+            before.st_size,
+            before.st_mtime_ns,
+            before.st_ctime_ns,
+        ) != (
+            after.st_size,
+            after.st_mtime_ns,
+            after.st_ctime_ns,
+        ):
+            raise OSError("executable_changed_during_snapshot")
+        snapshot_fd = os.open(
+            target,
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_CLOEXEC", 0),
+            0o700,
+        )
+        with os.fdopen(snapshot_fd, "wb") as snapshot:
+            snapshot_fd = -1
+            snapshot.write(payload)
+            snapshot.flush()
+            os.fsync(snapshot.fileno())
+        os.chmod(target, 0o500, follow_symlinks=False)
+        os.chflags(target, _UF_IMMUTABLE, follow_symlinks=False)
+        return hashlib.sha256(payload).hexdigest()
+    finally:
+        if duplicate_fd >= 0:
+            os.close(duplicate_fd)
+        if snapshot_fd >= 0:
+            os.close(snapshot_fd)
+
+
+def _remove_executable_snapshot(path: Path) -> None:
+    try:
+        os.chflags(path, 0, follow_symlinks=False)
+    except OSError:
+        pass
+    try:
+        path.unlink()
+    except OSError:
+        pass
+
+
+def _ctypes_function(library, name: str, *, restype, argtypes):
+    function = getattr(library, name)
+    function.restype = restype
+    function.argtypes = argtypes
+    return function
+
+
+def _assert_path_matches_descriptor(path: Path, descriptor: int, *, label: str) -> None:
+    """Fail closed when the pathname no longer names the validated object."""
+
+    try:
+        path_stat = os.stat(path, follow_symlinks=False)
+        descriptor_stat = os.fstat(descriptor)
+    except OSError as error:
+        raise OSError(f"unsafe_{label}") from error
+    if (path_stat.st_dev, path_stat.st_ino) != (
+        descriptor_stat.st_dev,
+        descriptor_stat.st_ino,
+    ):
+        raise OSError(f"unsafe_{label}")
+
+
+def _launch_macos_process(spec: ResumeCommandSpec) -> _PosixSpawnProcess:
+    """Spawn with macOS's descriptor-relative fchdir file action.
+
+    macOS's ``/dev/fd/N`` cannot be supplied as ``subprocess.Popen(cwd=...)``
+    and cannot execute an O_RDONLY descriptor.  ``posix_spawn`` gives us the
+    native fchdir action while the executable remains open and validated until
+    the spawn call completes.
+    """
+
+    libc = ctypes.CDLL(None, use_errno=True)
+    void_pointer = ctypes.c_void_p
+    pointer = ctypes.POINTER(void_pointer)
+    integer = ctypes.c_int
+    functions = {
+        alias: _ctypes_function(libc, symbol, restype=integer, argtypes=args)
+        for alias, symbol, args in (
+            ("actions_init", "posix_spawn_file_actions_init", [pointer]),
+            ("actions_fchdir", "posix_spawn_file_actions_addfchdir_np", [pointer, integer]),
+            ("actions_dup2", "posix_spawn_file_actions_adddup2", [pointer, integer, integer]),
+            ("actions_close", "posix_spawn_file_actions_addclose", [pointer, integer]),
+            ("actions_destroy", "posix_spawn_file_actions_destroy", [pointer]),
+            ("attributes_init", "posix_spawnattr_init", [pointer]),
+            ("attributes_setflags", "posix_spawnattr_setflags", [pointer, ctypes.c_short]),
+            ("attributes_destroy", "posix_spawnattr_destroy", [pointer]),
+        )
+    }
+    spawn = _ctypes_function(
+        libc,
+        "posix_spawn",
+        restype=integer,
+        argtypes=[
+            ctypes.POINTER(integer),
+            ctypes.c_char_p,
+            pointer,
+            pointer,
+            ctypes.POINTER(ctypes.c_char_p),
+            ctypes.POINTER(ctypes.c_char_p),
+        ],
+    )
+
+    executable_fd = -1
+    cwd_fd = -1
+    config_fd = -1
+    null_fd = -1
+    staging_dir: Path | None = None
+    staged_executable: Path | None = None
+    keep_staging_until_wait = False
+    actions = void_pointer()
+    attributes = void_pointer()
+    actions_initialized = False
+    attributes_initialized = False
+    try:
+        executable_fd = open_verified_executable(Path(spec.args[0]))
+        cwd_fd = open_trusted_directory(spec.cwd)
+        if spec.expected_cwd_device is not None or spec.expected_cwd_inode is not None:
+            if (spec.expected_cwd_device, spec.expected_cwd_inode) != (
+                os.fstat(cwd_fd).st_dev,
+                os.fstat(cwd_fd).st_ino,
+            ):
+                raise OSError("unsafe_project_directory")
+        environment = dict(spec.environment) if spec.environment is not None else dict(os.environ)
+        if spec.environment is not None:
+            config_dir = environment.get("CLAUDE_CONFIG_DIR")
+            if config_dir is None:
+                raise OSError("unsafe_account_directory")
+            config_fd = open_private_directory(Path(config_dir))
+            # macOS fdescfs exposes the descriptor itself but does not support
+            # resolving child names beneath /dev/fd/N.  Keep the directory
+            # open through spawn for validation, while passing its validated
+            # absolute path to Claude for normal directory traversal.
+            environment["CLAUDE_CONFIG_DIR"] = str(config_dir)
+
+        _assert_path_matches_descriptor(Path(spec.args[0]), executable_fd, label="executable")
+        _assert_path_matches_descriptor(spec.cwd, cwd_fd, label="project_directory")
+        if config_fd >= 0:
+            _assert_path_matches_descriptor(
+                Path(environment["CLAUDE_CONFIG_DIR"]),
+                config_fd,
+                label="account_directory",
+            )
+
+        # Execute a private read-only snapshot. A hardlink would still observe
+        # in-place mutations of the source executable.
+        staging_dir = Path(
+            tempfile.mkdtemp(prefix=".aiphetamine-exec-", dir="/private/tmp")
+        )
+        staged_executable = staging_dir / "claude"
+        staged_digest = _copy_executable_snapshot(executable_fd, staged_executable)
+        staged_fd = open_verified_executable(staged_executable)
+        try:
+            _assert_path_matches_descriptor(
+                staged_executable, staged_fd, label="staged_executable"
+            )
+        finally:
+            os.close(staged_fd)
+
+        config_stat = os.fstat(config_fd) if config_fd >= 0 else None
+        project_stat = os.fstat(cwd_fd)
+        launch_path = Path(sys.executable)
+        launch_args = (
+            str(launch_path),
+            "-I",
+            "-S",
+            "-c",
+            _CHILD_BOUNDARY_CHECK,
+            str(environment["CLAUDE_CONFIG_DIR"]) if config_stat is not None else "",
+            str(config_stat.st_dev) if config_stat is not None else "-1",
+            str(config_stat.st_ino) if config_stat is not None else "-1",
+            str(spec.cwd),
+            str(project_stat.st_dev),
+            str(project_stat.st_ino),
+            str(staged_executable),
+            staged_digest,
+            *spec.args[1:],
+        )
+
+        null_fd = os.open(
+            "/dev/null",
+            os.O_RDWR | getattr(os, "O_CLOEXEC", 0),
+        )
+        if functions["actions_init"](ctypes.byref(actions)) != 0:
+            raise OSError("spawn_file_actions_init")
+        actions_initialized = True
+        if functions["actions_fchdir"](ctypes.byref(actions), cwd_fd) != 0:
+            raise OSError("spawn_fchdir")
+        for target in (0, 1, 2):
+            if functions["actions_dup2"](ctypes.byref(actions), null_fd, target) != 0:
+                raise OSError("spawn_stdio")
+        if null_fd not in (0, 1, 2):
+            if functions["actions_close"](ctypes.byref(actions), null_fd) != 0:
+                raise OSError("spawn_devnull_close")
+
+        if functions["attributes_init"](ctypes.byref(attributes)) != 0:
+            raise OSError("spawn_attributes_init")
+        attributes_initialized = True
+        # POSIX_SPAWN_SETSID is Darwin-specific and is the equivalent of
+        # Popen(start_new_session=True) for this native path.
+        if functions["attributes_setflags"](ctypes.byref(attributes), 0x0400) != 0:
+            raise OSError("spawn_setsid")
+
+        encoded_args = [os.fsencode(argument) for argument in launch_args]
+        argv = (ctypes.c_char_p * (len(encoded_args) + 1))(
+            *encoded_args,
+            None,
+        )
+        encoded_environment = [
+            os.fsencode(f"{key}={value}") for key, value in environment.items()
+        ]
+        envp = (ctypes.c_char_p * (len(encoded_environment) + 1))(
+            *encoded_environment,
+            None,
+        )
+        pid = ctypes.c_int()
+        result = spawn(
+            ctypes.byref(pid),
+            os.fsencode(str(launch_path)),
+            ctypes.byref(actions),
+            ctypes.byref(attributes),
+            argv,
+            envp,
+        )
+        if result != 0:
+            raise OSError(result, os.strerror(result))
+        def cleanup_staging() -> None:
+            if staged_executable is not None:
+                _remove_executable_snapshot(staged_executable)
+            if staging_dir is not None:
+                try:
+                    staging_dir.rmdir()
+                except OSError:
+                    pass
+
+        process = _PosixSpawnProcess(pid.value, cleanup=cleanup_staging)
+        keep_staging_until_wait = True
+        try:
+            _assert_path_matches_descriptor(
+                Path(spec.args[0]), executable_fd, label="executable"
+            )
+            _assert_path_matches_descriptor(
+                spec.cwd, cwd_fd, label="project_directory"
+            )
+            if config_fd >= 0:
+                _assert_path_matches_descriptor(
+                    Path(environment["CLAUDE_CONFIG_DIR"]),
+                    config_fd,
+                    label="account_directory",
+                )
+        except OSError as error:
+            try:
+                os.kill(process.pid, signal.SIGKILL)
+            except (OSError, ProcessLookupError):
+                pass
+            process.wait()
+            raise OSError("launch_boundary_changed") from error
+        return process
+    finally:
+        if actions_initialized:
+            functions["actions_destroy"](ctypes.byref(actions))
+        if attributes_initialized:
+            functions["attributes_destroy"](ctypes.byref(attributes))
+        for descriptor in (null_fd, config_fd, cwd_fd, executable_fd):
+            if descriptor >= 0:
+                os.close(descriptor)
+        if not keep_staging_until_wait:
+            if staged_executable is not None:
+                _remove_executable_snapshot(staged_executable)
+            if staging_dir is not None:
+                try:
+                    staging_dir.rmdir()
+                except OSError:
+                    pass
 
 
 def build_resume_spec(
@@ -36,6 +448,8 @@ def build_resume_spec(
         args=(executable, "-p", "--resume", request.session_id, request.message),
         cwd=request.project_path,
         environment=environment,
+        expected_cwd_device=request.expected_project_device,
+        expected_cwd_inode=request.expected_project_inode,
     )
 
 
@@ -65,16 +479,49 @@ class ClaudeResumeExecutor:
 
     @staticmethod
     def _launch_process(spec: ResumeCommandSpec) -> subprocess.Popen[bytes]:
-        return subprocess.Popen(
-            list(spec.args),
-            cwd=str(spec.cwd),
-            shell=spec.shell,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=spec.start_new_session,
-            env=dict(spec.environment) if spec.environment is not None else None,
-        )
+        if not spec.args:
+            raise OSError("unsafe_executable")
+        if sys.platform == "darwin":
+            return _launch_macos_process(spec)
+        executable_fd = -1
+        cwd_fd = open_trusted_directory(spec.cwd)
+        config_fd = -1
+        try:
+            executable_fd = open_verified_executable(Path(spec.args[0]))
+            if spec.expected_cwd_device is not None or spec.expected_cwd_inode is not None:
+                if (spec.expected_cwd_device, spec.expected_cwd_inode) != (
+                    os.fstat(cwd_fd).st_dev,
+                    os.fstat(cwd_fd).st_ino,
+                ):
+                    raise OSError("unsafe_project_directory")
+            _assert_path_matches_descriptor(
+                Path(spec.args[0]), executable_fd, label="executable"
+            )
+            _assert_path_matches_descriptor(spec.cwd, cwd_fd, label="project_directory")
+            if spec.environment is not None:
+                config_dir = spec.environment.get("CLAUDE_CONFIG_DIR")
+                if config_dir is None:
+                    raise OSError("unsafe_account_directory")
+                config_fd = open_private_directory(Path(config_dir))
+                _assert_path_matches_descriptor(
+                    Path(config_dir), config_fd, label="account_directory"
+                )
+            return subprocess.Popen(
+                spec.args,
+                cwd=spec.cwd,
+                shell=False,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+                env=dict(spec.environment) if spec.environment is not None else None,
+            )
+        finally:
+            if config_fd >= 0:
+                os.close(config_fd)
+            os.close(cwd_fd)
+            if executable_fd >= 0:
+                os.close(executable_fd)
 
 
 class AccountRoutedResumeExecutor:
@@ -105,7 +552,7 @@ class AccountRoutedResumeExecutor:
 
 
 class DisabledResumeExecutor:
-    """Safe runtime boundary used until a separate live-launch approval exists."""
+    """Safe fallback used when validated resume configuration is unavailable."""
 
     def launch(self, request: ResumeRequest) -> ResumeLaunchResult:
         del request

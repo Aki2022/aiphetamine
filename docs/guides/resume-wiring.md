@@ -1,6 +1,6 @@
 ---
 id: GUIDE-resume-wiring
-updated_at: 2026-08-09
+updated_at: 2026-08-10
 source_issues: []
 source_workstreams:
   - WS-20260721-resume-wiring
@@ -19,16 +19,38 @@ The menu also shows the most recent poll boundary and aggregate outcome counts, 
 
 It schedules only the next even-hour poll and runs polls outside the menu thread. With the validated executable configuration, polls use the account-routed Claude executor; if configuration validation fails, the runtime falls back to a disabled executor.
 
-Resume requests carry the account label from the rate-limit event or its matching candidate. The live executor routes `main` through `~/.claude` and `alias` through the explicit `~/.claude-seat2` path; it refuses an unknown or conflicting account. Live account-routed execution is enabled only for sessions explicitly selected in the menu. Claude is invoked with `-p --resume`, so the work continues in the background; an existing interactive Claude window is not opened or changed by the poll.
+Resume requests carry the account label from both the rate-limit event and its matching candidate. The labels must be present and equal; an unlabeled or conflicting pair is refused. The live executor routes `main` through `~/.claude` and `alias` through the explicit `~/.claude-seat2` path; it refuses an unknown or conflicting account. Live account-routed execution is enabled only for sessions explicitly selected in the menu. Claude is invoked with `-p --resume`, so the work continues in the background; an existing interactive Claude window is not opened or changed by the poll.
 
-When a rate-limit event exists without a candidate snapshot, the runtime reconstructs a selectable candidate from the event. This covers Claude flows that emit `SessionEnd` after `StopFailure`; the event remains the authoritative trigger while the candidate supplies the menu selection boundary.
+The in-memory check state is scoped by both session ID and account label. A
+transcript lookup may add a title or repository display name, but it never
+converts an unlabeled candidate into an account-authorized candidate.
+
+When a rate-limit event exists without a candidate snapshot, the runtime reconstructs a selectable candidate from the event only when the event has a known account label. This covers Claude flows that emit `SessionEnd` after `StopFailure`; the event remains the authoritative trigger while the candidate supplies the menu selection boundary. Unlabeled legacy events are kept for inspection but cannot be selected for automatic resume.
+
+An account-unlabeled `SessionEnd` never deletes `main` or `alias` candidate
+files because the event cannot identify their owner. It may remove only the
+`unknown` or legacy flat candidate namespace, and it preserves any matching
+rate-limit event in any account scope.
+
+Startup cleanup removes abandoned `.tmp.` artifacts only after they are more
+than 24 hours old. Recent temporary files are retained so cleanup cannot race
+with an atomic Hook write and discard an event still being produced.
 
 ## Configuration Boundary
 
-The executable path is accepted only from an owner-controlled JSON configuration file when it is an absolute, regular, executable, non-symlink file. The configured path points to the verified managed Claude executable. If it becomes invalid, the runtime disables launch without disabling the menu.
+The executable path is accepted only from an owner-controlled JSON configuration file when it is an absolute, regular, executable, non-symlink file and every ancestor directory is a trusted, non-writable boundary. The configured path points to the verified managed Claude executable. Immediately before a real launch, the runtime opens the project directory, account directory, and executable with no-follow descriptors, compares each pathname to the descriptor identity, and fails closed on any mismatch. The project descriptor is also compared with the device/inode captured when the user selected the session. If a boundary cannot be proven stable, the runtime disables that launch without disabling the menu.
+
+The account roots must be private to the current user. Set `~/.claude` and
+`~/.claude-seat2` to mode `700`, and keep
+`~/.local/share/aiphetamine/config.json` at mode `600`. This is not a special
+permission granted to Python; it is an owner-only restriction that the
+AIphetamine process inherits when it runs as the user. If an account root is
+`755`, candidates can remain visible while resume is refused for that account
+and the poll result is restored; another account with a secure root can still
+route normally. Claude Code's project trust prompt is a separate mechanism.
 
 ## Verification
 
 Run the unittest suite, Python compilation, diff check, and documentation validator. The AppKit test verifies the status-item label and check-state behavior. Only checked menu rows can reach the live executor. Existing local rate-limit files without an account label are not evidence of the second account; they must be matched to the session store or recreated by a naturally occurring Hook event.
 
-Decision record: [ADR-20260809-account-routed-resume](../adrs/ADR-20260809-account-routed-resume.md).
+Decision records: [ADR-20260809-account-routed-resume](../adrs/ADR-20260809-account-routed-resume.md) and [ADR-20260809-account-scoped-artifacts](../adrs/ADR-20260809-account-scoped-artifacts.md).

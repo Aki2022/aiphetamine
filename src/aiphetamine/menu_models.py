@@ -17,6 +17,7 @@ class SessionMenuRow:
     title: str
     checked: bool
     status: str = ""
+    account_name: str | None = None
 
 
 def sanitize_menu_text(value: str | None, *, fallback: str) -> str:
@@ -24,9 +25,9 @@ def sanitize_menu_text(value: str | None, *, fallback: str) -> str:
         return fallback
     normalized = unicodedata.normalize("NFC", value)
     visible = "".join(
-        char
+        " " if char.isspace() else char
         for char in normalized
-        if char.isspace() or not unicodedata.category(char).startswith("C")
+        if not unicodedata.category(char).startswith("C") or char.isspace()
     )
     compact = " ".join(visible.split())
     if not compact:
@@ -51,12 +52,13 @@ def build_session_rows(
     for candidate in candidate_list:
         title = base_titles[candidate.session_id]
         if duplicates[title] > 1:
-            title = f"{title} · {candidate.session_id[:8]}"
+            title = f"{title} · {session_key(candidate.session_id)[:8]}"
         rows.append(
             SessionMenuRow(
                 session_id=candidate.session_id,
                 title=title,
-                checked=selection_store.is_selected(candidate.session_id),
+                checked=selection_store.is_selected(candidate.session_id, candidate.account_name),
+                account_name=candidate.account_name,
             )
         )
     return tuple(rows)

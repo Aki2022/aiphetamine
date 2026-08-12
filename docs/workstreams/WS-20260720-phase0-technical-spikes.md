@@ -142,14 +142,14 @@ Completed with real Hook payload evidence for event availability, field shape, a
 - The capture adapter remedies (stderr evidence and self-resolving `src`) were live-verified after adding `--verbose`.
 - Repository-local preparation: `hooks/capture_candidate_lifecycle.py` writes only safe digest/boolean candidate snapshots to a run-local temporary directory and records allowlisted lifecycle transitions; `scripts/run_candidate_lifecycle_spike.py` removes that directory after collection.
 - Account boundary: the primary and second Claude Code configuration directories were inspected through the official `CLAUDE_CONFIG_DIR` override. Both reported authenticated `claude.ai` status; a local comparison confirmed that they represent distinct accounts without retaining either identity value.
-- Second-account follow-up: the user-approved, minimal safe-mode non-interactive execution succeeded with `claude_exit=0` and a non-error result record. Only allowlisted stream type names were observed; no response, identity, authentication value, or Hook payload was retained. The observed `rate_limit_event` stream type is not a `StopFailure` Hook payload and does not satisfy ISSUE-03.
+- Second-account follow-up: the user-approved, minimal safe-mode non-interactive execution succeeded with `claude_exit=0` and a non-error result record. Only fixed stream type classifications were retained; no response, identity, authentication value, or Hook payload was retained. The observed `rate_limit_event` classification is not a `StopFailure` Hook payload and does not satisfy ISSUE-03.
 - Browser navigation was unnecessary. No logout, account switch, login submission, magic link, or authentication value was used or persisted.
 - Live environment: event availability, payload fields, candidate creation, activity refresh, and explicit end behavior verified in the approved ephemeral lifecycle run. Production candidate path/schema integration remains out of scope for this spike.
 
 #### Live Evidence
 
 - Approved live run: `claude_exit=0`; no settings file was modified, no rate limit was triggered, and no resume command was run.
-- Observed Hook names: `SessionStart:startup`, `UserPromptSubmit`, and `Stop`.
+- Hook-event presence and fixed classifications were observed for the approved lifecycle run.
 - Six sanitized evidence records were emitted by the capture adapter. Each retained only field-presence booleans and allowlisted classifications; no session ID, path, prompt, transcript, or account value was persisted.
 - Verified payload fields: `session_id`, `cwd`, `transcript_path`, and `hook_event_name` were present and non-empty. Normal lifecycle events had no failure reason (`failure_reason_class=missing`).
 - Candidate lifecycle classification: candidate creation — verified; activity refresh — verified by revision `1` to `2`; explicit end removal — verified by `SessionEnd` and final candidate file count `0`.
@@ -225,9 +225,9 @@ Complete for the separately approved process-present and process-absent scenario
 #### Protocol
 
 - Keep the session ID and project path in the user's local shell only; do not paste either value into chat, logs, fixtures, or the repository.
-- For each scenario, record only `process_present=true/false`, `cwd_check=passed/failed`, `claude_exit` as an integer, sanitized Hook event names, and whether a resume-start event was observed.
+- For each scenario, record only `process_present=true/false`, `cwd_check=passed/failed`, `claude_exit` as an integer, Hook-event presence/classification flags, and whether a resume-start event was observed.
 - Run the official command with the fixed message `Continue`, `shell=False` semantics, the verified CLI executable, and the selected project path as cwd. When using `--output-format stream-json` in print mode, include `--verbose`.
-- Use `python3 scripts/run_resume_spike.py` after setting `AIPHEMETINE_RESUME_SESSION_ID`, `AIPHEMETINE_RESUME_CWD`, and `AIPHEMETINE_ORIGINAL_PROCESS_PRESENT=true` in the user's local shell only. The runner prints only exit status, boolean process state, Hook names, and sanitized evidence.
+- Use `python3 scripts/run_resume_spike.py` after setting `AIPHEMETINE_RESUME_SESSION_ID`, `AIPHEMETINE_RESUME_CWD`, and `AIPHEMETINE_ORIGINAL_PROCESS_PRESENT=true` in the user's local shell only. The runner prints only exit status, boolean process state, label-presence flags, fixed classifications, and sanitized evidence.
 - Use transient settings only, with the capture adapter on `SessionStart`, `Stop`, and `StopFailure`; keep Hook stdout empty and collect sanitized stderr/stream evidence.
 - Test separately: original process absent, original process present, and (if naturally available) a session that is still rate-limited. Never inject input into the original process.
 - Mark history continuity, cwd handling, Hook execution, and process conflict as verified, contradicted, or unverified. A successful process start alone does not prove task continuation.
@@ -235,12 +235,12 @@ Complete for the separately approved process-present and process-absent scenario
 #### Live Evidence
 
 - Approved process-present run: one active top-level Claude process and its latest project session were selected deterministically after the user authorized any target.
-- Sanitized result: `process_present=true`, `claude_exit=0`, eight safe evidence records, and Hook names `SessionStart:resume`, `UserPromptSubmit`, `Stop`, and an inherited `PreToolUse:Bash` event.
+- Sanitized result: `process_present=true`, `claude_exit=0`, eight safe evidence records, and Hook-event presence/classification flags.
 - The stream included `previous_message_not_found` and `rate_limit_event`; neither is treated as proof of history continuity or a rate-limit Hook payload.
 - Four Hook payload records contained the required field-presence evidence and repeated the same run-local salted session digest. No raw stderr, session ID, path, prompt, or transcript was retained.
 - Hook execution and successful process start are verified for this run. History continuity, exact cwd handling, and process-conflict behavior remain unverified; a successful process start alone does not prove task continuation.
 - Earlier process-present failures remain recorded as historical attempts: one command-validation failure caused by the missing `--verbose` flag, followed by a Hook-enabled failure and a Hook-disabled baseline with `is_error=true`. Those failures were superseded for the selected target by this successful run, but they do not establish a root cause for the earlier failures.
-- Approved process-absent run: a session file not held open by an active Claude process was selected read-only, then resumed with `process_present=false`; it returned `claude_exit=0`, six safe evidence records, and Hook names `SessionStart:resume`, `UserPromptSubmit`, `Stop`, plus inherited `PreToolUse:Bash` and `PostToolUse:Edit` events.
+- Approved process-absent run: a session file not held open by an active Claude process was selected read-only, then resumed with `process_present=false`; it returned `claude_exit=0`, six safe evidence records, and Hook-event presence/classification flags.
 - The process-absent run also emitted `rate_limit_event` but no `StopFailure` Hook payload; no rate limit was intentionally triggered.
 - The process-present and process-absent runs both verified successful non-interactive start and Hook execution. Neither proves history continuity, exact cwd equality, or a distinct process-conflict response.
 - The resume runner now classifies result-record error fields into an allowlisted category while retaining neither the raw message nor its identifiers. This is fixture-verified only; no additional live resume was run for this change.

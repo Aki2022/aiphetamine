@@ -68,8 +68,8 @@ class MenuModelTests(unittest.TestCase):
 
             rows = build_session_rows(candidates, InMemorySelectionStore())
 
-            self.assertIn("alpha-12", rows[0].title)
-            self.assertIn("bravo-12", rows[1].title)
+            self.assertIn(session_key(candidates[0].session_id)[:8], rows[0].title)
+            self.assertIn(session_key(candidates[1].session_id)[:8], rows[1].title)
 
     def test_rows_use_project_directory_and_session_discriminator_when_hook_names_are_missing(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -116,9 +116,9 @@ class MenuModelTests(unittest.TestCase):
                     self.calls.append(("activate", session_id))
                     self.selection_store.activate(candidate, now)
 
-                def deactivate(self, session_id):
+                def deactivate(self, session_id, account_name=None):
                     self.calls.append(("deactivate", session_id))
-                    self.selection_store.deactivate(session_id)
+                    self.selection_store.deactivate(session_id, account_name)
 
             runtime = FakeRuntime()
             controller = MenuController(runtime, clock=lambda: candidate.updated_at)
@@ -131,6 +131,39 @@ class MenuModelTests(unittest.TestCase):
             self.assertTrue(enabled.session_rows[0].checked)
             self.assertFalse(disabled.session_rows[0].checked)
             self.assertEqual(runtime.calls, [("activate", "session-toggle"), ("deactivate", "session-toggle")])
+
+    def test_controller_ignores_project_disappearing_before_activation(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            candidate = CandidateSession(
+                1,
+                "candidate",
+                "session-disappeared",
+                root,
+                datetime(2026, 7, 21, 12, tzinfo=UTC),
+                "title",
+                "project",
+                account_name="main",
+            )
+
+            class FakeRuntime:
+                def __init__(self):
+                    self.selection_store = InMemorySelectionStore()
+
+                def candidates(self, now):
+                    return (candidate,)
+
+                def activate(self, session_id, now):
+                    raise FileNotFoundError(session_id)
+
+                def deactivate(self, session_id, account_name=None):
+                    del session_id, account_name
+
+            controller = MenuController(FakeRuntime(), clock=lambda: candidate.updated_at)
+
+            state = controller.toggle("session-disappeared")
+
+            self.assertFalse(state.session_rows[0].checked)
 
     def test_selectable_rows_exclude_candidates_without_human_metadata(self):
         with tempfile.TemporaryDirectory() as temp_dir:

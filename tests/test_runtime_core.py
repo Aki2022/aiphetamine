@@ -1,15 +1,17 @@
 import json
+import os
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from datetime import datetime, timezone
 from pathlib import Path
-
 SOURCE_ROOT = Path(__file__).resolve().parents[1] / "src"
 sys.path.insert(0, str(SOURCE_ROOT))
 
 from aiphetamine.domain import session_key
 from aiphetamine.domain import CandidateSession
+from aiphetamine import executor as executor_module
 from aiphetamine.domain import ResumeRequest, ResumeLaunchResult
 from aiphetamine.executor import (
     AccountRoutedResumeExecutor,
@@ -60,6 +62,216 @@ class RuntimeCoreTests(unittest.TestCase):
         self.assertEqual(result, ResumeLaunchResult(True, 31415, None))
         self.assertEqual(len(calls), 1)
         self.assertTrue(calls[0].devnull_streams)
+
+    def test_real_process_boundary_uses_verified_cwd_and_config(self):
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as temp_dir:
+            root = Path(temp_dir)
+            executable = root / "claude"
+            executable.write_text(
+                "#!/bin/sh\n"
+                "pwd > child-cwd\n"
+                "test -d \"$CLAUDE_CONFIG_DIR\" && touch \"$CLAUDE_CONFIG_DIR/config-seen\"\n"
+                "exit 0\n",
+                encoding="utf-8",
+            )
+            executable.chmod(0o700)
+            config = root / "config"
+            config.mkdir(mode=0o700)
+            spec = build_resume_spec(
+                executable,
+                ResumeRequest("session-command", root),
+                config_dir=config,
+            )
+            process = ClaudeResumeExecutor._launch_process(spec)
+
+            self.assertEqual(process.wait(), 0)
+            self.assertEqual((root / "child-cwd").read_text().strip(), str(root))
+            self.assertTrue((config / "config-seen").exists())
+
+    @unittest.skipUnless(sys.platform == "darwin", "requires macOS native spawn")
+    def test_macos_launch_fails_closed_when_executable_changes_after_validation(self):
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as temp_dir:
+            root = Path(temp_dir)
+            executable = root / "claude"
+            executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            executable.chmod(0o700)
+            replacement = root / "replacement"
+            spec = build_resume_spec(executable, ResumeRequest("safe", root))
+            real_open = executor_module.open_verified_executable
+
+            def swap_after_validation(path):
+                descriptor = real_open(path)
+                replacement.write_text("#!/bin/sh\nexit 91\n", encoding="utf-8")
+                replacement.chmod(0o700)
+                os.replace(replacement, executable)
+                return descriptor
+
+            with mock.patch.object(
+                executor_module, "open_verified_executable", swap_after_validation
+            ):
+                with self.assertRaises(OSError):
+                    ClaudeResumeExecutor._launch_process(spec)
+
+    @unittest.skipUnless(sys.platform == "darwin", "requires macOS native spawn")
+    def test_macos_launch_fails_closed_when_account_directory_changes_after_validation(self):
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as temp_dir:
+            root = Path(temp_dir)
+            executable = root / "claude"
+            executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            executable.chmod(0o700)
+            config = root / "config"
+            config.mkdir(mode=0o700)
+            original_config = root / "original-config"
+            spec = build_resume_spec(
+                executable,
+                ResumeRequest("safe", root),
+                config_dir=config,
+            )
+            real_open = executor_module.open_private_directory
+
+            def swap_after_validation(path):
+                descriptor = real_open(path)
+                if Path(path) == config:
+                    os.replace(config, original_config)
+                    config.mkdir(mode=0o700)
+                return descriptor
+
+            with mock.patch.object(
+                executor_module, "open_private_directory", swap_after_validation
+            ):
+                with self.assertRaises(OSError):
+                    ClaudeResumeExecutor._launch_process(spec)
+
+    @unittest.skipUnless(sys.platform == "darwin", "requires macOS native spawn")
+    def test_macos_launch_stops_when_paths_change_after_identity_check(self):
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as temp_dir:
+            root = Path(temp_dir)
+            executable = root / "claude"
+            executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            executable.chmod(0o700)
+            config = root / "config"
+            config.mkdir(mode=0o700)
+            replacement = root / "replacement"
+            original_assert = executor_module._assert_path_matches_descriptor
+
+            def swap_after_assert(path, descriptor, *, label):
+                original_assert(path, descriptor, label=label)
+                if label == "executable":
+                    replacement.write_text("#!/bin/sh\nexit 91\n", encoding="utf-8")
+                    replacement.chmod(0o700)
+                    os.replace(replacement, executable)
+                elif label == "account_directory":
+                    original_config = root / "original-config"
+                    os.replace(config, original_config)
+                    config.mkdir(mode=0o700)
+
+            spec = build_resume_spec(
+                executable,
+                ResumeRequest("safe", root),
+                config_dir=config,
+            )
+            with mock.patch.object(
+                executor_module,
+                "_assert_path_matches_descriptor",
+                swap_after_assert,
+            ):
+                with self.assertRaises(OSError):
+                    ClaudeResumeExecutor._launch_process(spec)
+
+    @unittest.skipUnless(sys.platform == "darwin", "requires macOS native spawn")
+    def test_macos_launch_uses_snapshot_when_source_is_mutated_in_place(self):
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as temp_dir:
+            root = Path(temp_dir)
+            executable = root / "claude"
+            executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            executable.chmod(0o700)
+            spec = build_resume_spec(executable, ResumeRequest("safe", root))
+            original_assert = executor_module._assert_path_matches_descriptor
+            mutated = False
+
+            def mutate_after_snapshot(path, descriptor, *, label):
+                nonlocal mutated
+                original_assert(path, descriptor, label=label)
+                if label == "staged_executable" and not mutated:
+                    executable.write_text("#!/bin/sh\nexit 91\n", encoding="utf-8")
+                    executable.chmod(0o700)
+                    mutated = True
+
+            with mock.patch.object(
+                executor_module,
+                "_assert_path_matches_descriptor",
+                mutate_after_snapshot,
+            ):
+                process = ClaudeResumeExecutor._launch_process(spec)
+
+            self.assertEqual(process.wait(), 0)
+
+    @unittest.skipUnless(sys.platform == "darwin", "requires macOS native spawn")
+    def test_macos_child_verifier_rejects_mutated_staging_snapshot(self):
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as temp_dir:
+            root = Path(temp_dir)
+            executable = root / "claude"
+            executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            executable.chmod(0o700)
+            config = root / "config"
+            config.mkdir(mode=0o700)
+            spec = build_resume_spec(
+                executable,
+                ResumeRequest("safe", root),
+                config_dir=config,
+            )
+            original_assert = executor_module._assert_path_matches_descriptor
+            mutated = False
+
+            def mutate_staging_after_check(path, descriptor, *, label):
+                nonlocal mutated
+                original_assert(path, descriptor, label=label)
+                if label == "staged_executable" and not mutated:
+                    os.chflags(path, 0, follow_symlinks=False)
+                    path.chmod(0o700)
+                    path.write_text("#!/bin/sh\nexit 91\n", encoding="utf-8")
+                    path.chmod(0o500)
+                    mutated = True
+
+            with mock.patch.object(
+                executor_module,
+                "_assert_path_matches_descriptor",
+                mutate_staging_after_check,
+            ):
+                process = ClaudeResumeExecutor._launch_process(spec)
+
+            self.assertTrue(mutated)
+            self.assertEqual(process.wait(), 125)
+
+    @unittest.skipUnless(sys.platform == "darwin", "requires macOS native spawn")
+    def test_macos_launch_rejects_project_replacement_after_identity_check(self):
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as temp_dir:
+            root = Path(temp_dir)
+            executable = root / "claude"
+            executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            executable.chmod(0o700)
+            project = root / "project"
+            project.mkdir(mode=0o700)
+            replacement = root / "replacement-project"
+            spec = build_resume_spec(
+                executable,
+                ResumeRequest("safe", project),
+            )
+            original_assert = executor_module._assert_path_matches_descriptor
+
+            def swap_after_project_check(path, descriptor, *, label):
+                original_assert(path, descriptor, label=label)
+                if label == "project_directory":
+                    os.replace(project, replacement)
+                    project.mkdir(mode=0o700)
+
+            with mock.patch.object(
+                executor_module,
+                "_assert_path_matches_descriptor",
+                swap_after_project_check,
+            ):
+                with self.assertRaises(OSError):
+                    ClaudeResumeExecutor._launch_process(spec)
 
     def test_account_routed_executor_sets_the_selected_config_directory(self):
         calls = []
@@ -168,6 +380,35 @@ class RuntimeCoreTests(unittest.TestCase):
             self.assertFalse(processing_path.exists())
             self.assertIn("12:00:00", event_path.read_text(encoding="utf-8"))
 
+    def test_startup_preserves_fresh_ambiguous_rate_limit_events(self):
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as temp_dir:
+            root = Path(temp_dir)
+            main = root / "main"
+            alias = root / "alias"
+            main.mkdir(mode=0o700)
+            alias.mkdir(mode=0o700)
+            now = datetime(2026, 7, 21, 12, tzinfo=UTC)
+            session_id = "duplicate-startup"
+            payload = {
+                "schema_version": 1,
+                "record_type": "rate_limit",
+                "reason": "rate_limit",
+                "session_id": session_id,
+                "project_path": str(root),
+                "updated_at": "2026-07-21T11:59:00+00:00",
+            }
+            main_path = main / f"{session_key(session_id)}.json"
+            alias_path = alias / f"{session_key(session_id)}.json"
+            main_path.write_text(json.dumps({**payload, "account_name": "main"}), encoding="utf-8")
+            alias_path.write_text(json.dumps({**payload, "account_name": "alias"}), encoding="utf-8")
+
+            repository = RateLimitEventRepository(root)
+            self.assertEqual(repository.list_events(now=now), [])
+            self.assertEqual(repository.ambiguous_session_ids, {session_id})
+            self.assertEqual(repository.cleanup_on_startup(now=now, preserve_fresh=True), 0)
+            self.assertTrue(main_path.exists())
+            self.assertTrue(alias_path.exists())
+
     def test_startup_cleanup_only_removes_rate_limit_artifacts(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -177,7 +418,10 @@ class RuntimeCoreTests(unittest.TestCase):
             candidate.write_text("keep", encoding="utf-8")
             (root / "one.json").write_text("event", encoding="utf-8")
             (root / "two.processing").write_text("event", encoding="utf-8")
-            (root / "three.tmp.worker").write_text("event", encoding="utf-8")
+            old_temp = root / "three.tmp.worker"
+            old_temp.write_text("event", encoding="utf-8")
+            old_timestamp = datetime.now(UTC).timestamp() - 2 * 24 * 60 * 60
+            os.utime(old_temp, (old_timestamp, old_timestamp))
             (root / "notes.txt").write_text("keep", encoding="utf-8")
 
             removed = RateLimitEventRepository(root).cleanup_on_startup()
@@ -187,13 +431,29 @@ class RuntimeCoreTests(unittest.TestCase):
             self.assertTrue((root / "notes.txt").exists())
             self.assertEqual(list(root.iterdir()), [candidate_root, root / "notes.txt"])
 
+    def test_startup_cleanup_preserves_fresh_temp_artifacts(self):
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as temp_dir:
+            root = Path(temp_dir)
+            fresh_temp = root / "event.tmp.writer"
+            fresh_temp.write_text("in progress", encoding="utf-8")
+
+            removed = RateLimitEventRepository(root).cleanup_on_startup(
+                now=datetime.now(UTC)
+            )
+
+            self.assertEqual(removed, 0)
+            self.assertTrue(fresh_temp.exists())
+
     def test_poll_cycle_completes_successful_launch_and_restores_failed_launch(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             candidates_dir = root / "candidates"
             events_dir = root / "rate_limits"
-            candidates_dir.mkdir()
-            events_dir.mkdir()
+            candidates_dir.mkdir(mode=0o700)
+            events_dir.mkdir(mode=0o700)
+            (events_dir / "alias").mkdir(mode=0o700)
+            (candidates_dir / "main").mkdir(mode=0o700)
+            (events_dir / "main").mkdir(mode=0o700)
             now = datetime(2026, 7, 21, 12, tzinfo=UTC)
 
             def write_record(session_id, record_type, **extra):
@@ -203,9 +463,10 @@ class RuntimeCoreTests(unittest.TestCase):
                     "session_id": session_id,
                     "project_path": str(root),
                     "updated_at": "2026-07-21T11:59:00+00:00",
+                    "account_name": "main",
                     **extra,
                 }
-                target = events_dir if record_type == "rate_limit" else candidates_dir
+                target = events_dir / "main" if record_type == "rate_limit" else candidates_dir / "main"
                 (target / f"{session_key(session_id)}.json").write_text(
                     json.dumps(payload), encoding="utf-8"
                 )
@@ -215,8 +476,8 @@ class RuntimeCoreTests(unittest.TestCase):
             write_record("session-failure", "candidate")
             write_record("session-failure", "rate_limit", reason="rate_limit")
             candidates = [
-                CandidateSession(1, "candidate", "session-success", root, now),
-                CandidateSession(1, "candidate", "session-failure", root, now),
+                CandidateSession(1, "candidate", "session-success", root, now, account_name="main"),
+                CandidateSession(1, "candidate", "session-failure", root, now, account_name="main"),
             ]
 
             class FakeExecutor:
@@ -241,16 +502,17 @@ class RuntimeCoreTests(unittest.TestCase):
                 {outcome.session_id: outcome.status for outcome in outcomes},
                 {"session-success": "completed", "session-failure": "restored"},
             )
-            self.assertFalse((events_dir / f"{session_key('session-success')}.json").exists())
-            self.assertTrue((events_dir / f"{session_key('session-failure')}.json").exists())
+            self.assertFalse((events_dir / "main" / f"{session_key('session-success')}.json").exists())
+            self.assertTrue((events_dir / "main" / f"{session_key('session-failure')}.json").exists())
 
     def test_poll_cycle_uses_enriched_candidate_provider_for_account_routing(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             candidates_dir = root / "candidates"
             events_dir = root / "rate_limits"
-            candidates_dir.mkdir()
-            events_dir.mkdir()
+            candidates_dir.mkdir(mode=0o700)
+            events_dir.mkdir(mode=0o700)
+            (events_dir / "alias").mkdir(mode=0o700)
             now = datetime(2026, 7, 21, 12, tzinfo=UTC)
             session_id = "session-provider-alias"
             event = {
@@ -262,7 +524,7 @@ class RuntimeCoreTests(unittest.TestCase):
                 "updated_at": "2026-07-21T11:59:00+00:00",
                 "account_name": "alias",
             }
-            (events_dir / f"{session_key(session_id)}.json").write_text(
+            (events_dir / "alias" / f"{session_key(session_id)}.json").write_text(
                 json.dumps(event), encoding="utf-8"
             )
             candidate = CandidateSession(
@@ -290,13 +552,55 @@ class RuntimeCoreTests(unittest.TestCase):
             self.assertEqual(outcomes[0].status, "completed")
             self.assertEqual(requests[0].account_name, "alias")
 
+    def test_poll_cycle_initialize_preserves_fresh_ambiguous_events(self):
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as temp_dir:
+            root = Path(temp_dir)
+            candidates_dir = root / "candidates"
+            events_dir = root / "rate_limits"
+            candidates_dir.mkdir(mode=0o700)
+            events_dir.mkdir(mode=0o700)
+            now = datetime(2026, 7, 21, 12, tzinfo=UTC)
+            session_id = "initialize-duplicate"
+            paths = []
+            for account in ("main", "alias"):
+                scope = events_dir / account
+                scope.mkdir(mode=0o700)
+                path = scope / f"{session_key(session_id)}.json"
+                path.write_text(
+                    json.dumps(
+                        {
+                            "schema_version": 1,
+                            "record_type": "rate_limit",
+                            "reason": "rate_limit",
+                            "session_id": session_id,
+                            "project_path": str(root),
+                            "updated_at": "2026-07-21T11:59:00+00:00",
+                            "account_name": account,
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                paths.append(path)
+
+            removed = RuntimePollCycle(
+                candidates_dir,
+                events_dir,
+                InMemorySelectionStore(),
+                executor=None,
+            ).initialize(now)
+
+            self.assertEqual(removed, 0)
+            self.assertTrue(all(path.exists() for path in paths))
+
     def test_poll_cycle_restores_event_when_executor_raises(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             candidates_dir = root / "candidates"
             events_dir = root / "rate_limits"
-            candidates_dir.mkdir()
-            events_dir.mkdir()
+            candidates_dir.mkdir(mode=0o700)
+            events_dir.mkdir(mode=0o700)
+            (candidates_dir / "main").mkdir(mode=0o700)
+            (events_dir / "main").mkdir(mode=0o700)
             now = datetime(2026, 7, 21, 12, tzinfo=UTC)
             session_id = "session-exception"
             payload = {
@@ -306,12 +610,13 @@ class RuntimeCoreTests(unittest.TestCase):
                 "session_id": session_id,
                 "project_path": str(root),
                 "updated_at": "2026-07-21T11:59:00+00:00",
+                "account_name": "main",
             }
-            (events_dir / f"{session_key(session_id)}.json").write_text(
+            (events_dir / "main" / f"{session_key(session_id)}.json").write_text(
                 json.dumps(payload), encoding="utf-8"
             )
-            candidate = CandidateSession(1, "candidate", session_id, root, now)
-            (candidates_dir / f"{session_key(session_id)}.json").write_text(
+            candidate = CandidateSession(1, "candidate", session_id, root, now, account_name="main")
+            (candidates_dir / "main" / f"{session_key(session_id)}.json").write_text(
                 json.dumps({**payload, "record_type": "candidate"}), encoding="utf-8"
             )
 
@@ -331,15 +636,17 @@ class RuntimeCoreTests(unittest.TestCase):
             ).run(now)
 
             self.assertEqual(outcomes[0].status, "restored")
-            self.assertTrue((events_dir / f"{session_key(session_id)}.json").exists())
+            self.assertTrue((events_dir / "main" / f"{session_key(session_id)}.json").exists())
 
     def test_poll_cycle_preserves_recreated_event_when_launch_fails(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             candidates_dir = root / "candidates"
             events_dir = root / "rate_limits"
-            candidates_dir.mkdir()
-            events_dir.mkdir()
+            candidates_dir.mkdir(mode=0o700)
+            events_dir.mkdir(mode=0o700)
+            (candidates_dir / "main").mkdir(mode=0o700)
+            (events_dir / "main").mkdir(mode=0o700)
             now = datetime(2026, 7, 21, 12, tzinfo=UTC)
             session_id = "session-recreated"
             payload = {
@@ -349,18 +656,19 @@ class RuntimeCoreTests(unittest.TestCase):
                 "session_id": session_id,
                 "project_path": str(root),
                 "updated_at": "2026-07-21T11:59:00+00:00",
+                "account_name": "main",
             }
-            (events_dir / f"{session_key(session_id)}.json").write_text(
+            (events_dir / "main" / f"{session_key(session_id)}.json").write_text(
                 json.dumps(payload), encoding="utf-8"
             )
-            candidate = CandidateSession(1, "candidate", session_id, root, now)
-            (candidates_dir / f"{session_key(session_id)}.json").write_text(
+            candidate = CandidateSession(1, "candidate", session_id, root, now, account_name="main")
+            (candidates_dir / "main" / f"{session_key(session_id)}.json").write_text(
                 json.dumps({**payload, "record_type": "candidate"}), encoding="utf-8"
             )
 
             class RecreatingExecutor:
                 def launch(self, request):
-                    (events_dir / f"{session_key(session_id)}.json").write_text(
+                    (events_dir / "main" / f"{session_key(session_id)}.json").write_text(
                         json.dumps({**payload, "updated_at": "2026-07-21T12:00:00+00:00"}),
                         encoding="utf-8",
                     )
@@ -378,10 +686,10 @@ class RuntimeCoreTests(unittest.TestCase):
             ).run(now)
 
             self.assertEqual(outcomes[0].status, "restored")
-            self.assertTrue((events_dir / f"{session_key(session_id)}.json").exists())
+            self.assertTrue((events_dir / "main" / f"{session_key(session_id)}.json").exists())
             self.assertIn(
                 "12:00:00",
-                (events_dir / f"{session_key(session_id)}.json").read_text(encoding="utf-8"),
+                (events_dir / "main" / f"{session_key(session_id)}.json").read_text(encoding="utf-8"),
             )
 
 

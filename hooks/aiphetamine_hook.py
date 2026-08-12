@@ -5,8 +5,8 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import stat
 import sys
-import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -15,10 +15,16 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from aiphetamine.domain import session_key
+from aiphetamine.filesystem_security import (
+    atomic_write_bytes,
+    ensure_private_directory,
+    secure_unlink,
+)
 
 
 UTC = timezone.utc
 _ALLOWED_ACCOUNT_NAMES = frozenset(("main", "alias"))
+_ACCOUNT_SCOPES = _ALLOWED_ACCOUNT_NAMES | {"unknown"}
 
 
 def apply_event(payload: dict[str, Any], event: str, data_root: Path, now: datetime, account_name: str | None = None) -> str:
@@ -30,22 +36,69 @@ def apply_event(payload: dict[str, Any], event: str, data_root: Path, now: datet
     cwd = payload.get("cwd")
     if not isinstance(session_id, str) or not session_id or not isinstance(cwd, str):
         return "invalid_payload"
+    try:
+        session_id.encode("utf-8")
+    except UnicodeError:
+        # Reject lone surrogates before deriving a filesystem key or writing
+        # JSON. They can arrive through malformed JSON and are not valid UTF-8
+        # data for a local record.
+        return "invalid_payload"
+    try:
+        cwd.encode("utf-8")
+    except UnicodeError:
+        return "invalid_payload"
+    if "\x00" in cwd:
+        return "invalid_payload"
     project_path = Path(cwd)
     if not project_path.is_absolute():
         return "invalid_payload"
     key = session_key(session_id)
-    candidates = data_root / "candidates"
-    rate_limits = data_root / "rate_limits"
+    candidates_root = data_root / "candidates"
+    rate_limits_root = data_root / "rate_limits"
+    scope = account_name or "unknown"
+    candidates = candidates_root / scope
+    rate_limits = rate_limits_root / scope
+    try:
+        ensure_private_directory(data_root)
+        ensure_private_directory(candidates_root)
+        ensure_private_directory(rate_limits_root)
+        ensure_private_directory(candidates)
+        ensure_private_directory(rate_limits)
+    except OSError:
+        return "filesystem_error"
     if event == "SessionEnd":
-        target = candidates / f"{key}.json"
-        rate_limit = rate_limits / f"{key}.json"
-        if rate_limit.is_file() and not rate_limit.is_symlink():
+        # An unlabeled end event cannot identify which account owns a
+        # candidate. Inspect every rate-limit scope for preservation, but only
+        # delete the unknown/legacy candidate namespace.
+        rate_limit_paths = [
+            rate_limits_root / item / f"{key}.json"
+            for item in sorted(_ACCOUNT_SCOPES)
+        ]
+        # Read the legacy flat location only to preserve an event created by an
+        # older Hook; new writes always use an account scope.
+        rate_limit_paths.append(rate_limits_root / f"{key}.json")
+        if any(_is_regular_file(path) for path in rate_limit_paths):
             return "preserved_for_rate_limit"
+        scopes = (scope,) if account_name is not None else ("unknown",)
+        account_scoped_candidate_exists = account_name is None and any(
+            _is_regular_file(candidates_root / item / f"{key}.json")
+            for item in _ALLOWED_ACCOUNT_NAMES
+        )
+        for item in scopes:
+            target = candidates_root / item / f"{key}.json"
+            if not target.parent.is_dir() or target.parent.is_symlink():
+                continue
+            try:
+                secure_unlink(target)
+            except FileNotFoundError:
+                continue
+            except OSError:
+                return "filesystem_error"
         try:
-            target.unlink(missing_ok=True)
-        except OSError:
-            return "filesystem_error"
-        return "removed"
+            secure_unlink(candidates_root / f"{key}.json")
+        except (FileNotFoundError, OSError):
+            pass
+        return "preserved_unlabeled" if account_scoped_candidate_exists else "removed"
     if event not in {"SessionStart", "UserPromptSubmit", "StopFailure"}:
         return "ignored"
     directory = rate_limits if event == "StopFailure" else candidates
@@ -72,19 +125,18 @@ def apply_event(payload: dict[str, Any], event: str, data_root: Path, now: datet
     return "written"
 
 
-def _atomic_write(target: Path, record: dict[str, Any]) -> None:
-    target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    descriptor, name = tempfile.mkstemp(prefix=f".{target.stem}.tmp.", dir=target.parent)
-    temporary = Path(name)
+def _is_regular_file(path: Path) -> bool:
     try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-            os.chmod(temporary, 0o600)
-            json.dump(record, stream, ensure_ascii=False, sort_keys=True)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, target)
-    finally:
-        temporary.unlink(missing_ok=True)
+        return stat.S_ISREG(os.stat(path, follow_symlinks=False).st_mode)
+    except OSError:
+        return False
+
+
+def _atomic_write(target: Path, record: dict[str, Any]) -> None:
+    # ASCII escaping keeps malformed-but-parseable Unicode values from
+    # causing a UTF-8 encoding traceback in the Hook process.
+    encoded = json.dumps(record, ensure_ascii=True, sort_keys=True).encode("utf-8")
+    atomic_write_bytes(target, encoded)
 
 
 def main() -> int:
@@ -95,7 +147,7 @@ def main() -> int:
     args = parser.parse_args()
     try:
         payload = json.load(sys.stdin)
-    except (json.JSONDecodeError, OSError):
+    except (json.JSONDecodeError, OSError, RecursionError):
         print("invalid_payload", file=sys.stderr)
         return 0
     result = apply_event(payload if isinstance(payload, dict) else {}, args.event, args.data_root, datetime.now(UTC), args.account_name)

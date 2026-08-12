@@ -51,7 +51,7 @@ def _read_revision(path: Path) -> int:
         return 0
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, TypeError, ValueError):
+    except (OSError, TypeError, ValueError, RecursionError):
         return 0
     revision = value.get("revision") if isinstance(value, dict) else None
     return revision if isinstance(revision, int) and revision >= 0 else 0
@@ -134,6 +134,6 @@ def process_lifecycle_payload(payload: Any, output: TextIO) -> int:
 if __name__ == "__main__":
     try:
         payload = json.load(sys.stdin)
-    except (json.JSONDecodeError, TypeError, ValueError):
+    except (json.JSONDecodeError, TypeError, ValueError, RecursionError):
         payload = None
     raise SystemExit(process_lifecycle_payload(payload, sys.stderr))

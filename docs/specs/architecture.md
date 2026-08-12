@@ -2,7 +2,7 @@
 id: SPEC-aiphetamine-architecture
 status: active
 created_at: 2026-07-19
-updated_at: 2026-07-20
+updated_at: 2026-08-09
 related_guides: []
 affected_workstreams: []
 ---
@@ -14,6 +14,14 @@ affected_workstreams: []
 本書は、`PRD.md`で定義したAIphetamine MVPを、Pythonで実装するためのアーキテクチャ、責務分割、データ構造、処理フロー、エラー処理、テスト方針を定義する。
 
 実装者は、まず技術検証を行い、検証結果を本書へ反映した後に本実装へ進む。
+
+## 1.1 現行ソースツリーの境界
+
+本書には目標アーキテクチャと現行プロトタイプの両方を記載する。現行実装は
+Hook、owner-only JSON Repository、メモリ上の選択、固定境界poll、基本的なAppKit
+メニュー、dry-run、LaunchAgent plist生成までを提供する。LaunchAgentの登録、自然な
+rate-limitの再発、実Claudeセッションの継続、行ごとの失敗・期限切れ・パス不一致表示、
+不正イベント件数のUI表示は未提供または未検証であり、目標仕様として扱う。
 
 ## 2. アーキテクチャ方針
 
@@ -106,11 +114,11 @@ MVPでは、メニューバーUIとスケジューラを単一Pythonプロセス
 - デバッグが容易
 - 10セッションまでを動作保証・テスト規模とし、巡回処理が軽量
 
-Launch at Loginは同じエントリーポイントをLaunchAgentから起動する。
+Launch at Login用のplistは同じエントリーポイントを起動する内容として生成する。plistの登録・解除は実装の副作用にせず、オペレーターが手動で行う。
 
-MVPは専用venvを作成せず、ユーザーの既存Python環境を使用する。installスクリプト実行時の`sys.executable`を絶対パスとしてLaunchAgentへ記録し、手動起動とログイン起動で同じPythonを使う。
+MVPは専用venvを作成せず、ユーザーの既存Python環境を使用する。LaunchAgent plist生成時に指定されたPython実行ファイルを絶対パスとして記録し、手動起動とログイン起動で同じPythonを使う。
 
-installスクリプトはPython 3.11以上と必須モジュールのimport可否を検査する。不足時は既存Python環境を変更せず、導入手順を表示して非ゼロ終了する。依存パッケージの自動インストールは行わない。
+実装にはインストールスクリプトは含まれない。利用者がPython 3.11以上と必須モジュールを確認し、既存環境を変更せずに導入する。
 
 ## 5. ディレクトリ構成
 
@@ -181,8 +189,8 @@ aiphetamine/
 
 ```text
 ~/.local/share/aiphetamine/
-├── candidates/
-├── rate_limits/
+├── candidates/{main,alias,unknown}/
+├── rate_limits/{main,alias,unknown}/
 └── logs/
 ```
 
@@ -199,7 +207,7 @@ INSTANCE_LOCK = DATA_DIR / "instance.lock"
 
 権限と所有境界:
 
-- データルート、`candidates/`、`rate_limits/`、`logs/`はowner-onlyの`0700`
+- データルート、`candidates/`、`rate_limits/`、各アカウントスコープ、`logs/`はowner-onlyの`0700`
 - 候補JSON、rate limit JSON、設定、ログは`0600`
 - `instance.lock`は`0600`で作成し、起動中だけ非ブロッキング排他lockを保持する
 - データルートから処理対象ファイルまでsymlinkを拒否する
@@ -216,7 +224,7 @@ INSTANCE_LOCK = DATA_DIR / "instance.lock"
 }
 ```
 
-installスクリプトがClaude実行ファイルのsymlinkを`resolve(strict=True)`で実体パスへ解決し、`config.json`へ`0600`で原子的に保存する。アプリは未知のschema version、相対パス、symlink、非通常ファイル、実行不可を設定エラーとして扱う。Launch at Login状態はLaunchAgent登録状態から読み、configへ重複保存しない。
+実装は`config.json`を生成せず読み取りだけを行う。読み込み時は設定ファイルと親ディレクトリ、Claude実行ファイル、実行ファイルの親ディレクトリについて、所有者・権限・symlink・通常ファイル・実行可能性を検証する。Launch at Loginの登録状態は管理せず、plist生成後の手動操作に委ねる。
 
 LaunchAgent:
 
@@ -285,6 +293,8 @@ class ResumeRequest:
     project_path: Path
     message: str = "Continue"
     account_name: str | None = None
+    expected_project_device: int | None = None
+    expected_project_inode: int | None = None
 ```
 
 ## 7.4 ResumeLaunchResult
@@ -307,6 +317,7 @@ stdout/stderrは取得・保存しないため、結果モデルへ追加しな�
 @dataclass(frozen=True)
 class SessionActivation:
     session_id: str
+    account_name: str | None
     activated_at: datetime
     expires_at: datetime
     resolved_project_path: Path
@@ -324,10 +335,13 @@ class SessionActivation:
 
 JSONは「rate limitに到達した」という単発イベントである。
 
-候補発見記録とrate limitイベントは、寿命と操作が異なるため用途別ディレクトリへ分離する。
+候補発見記録とrate limitイベントは、寿命と操作が異なるため用途別ディレクトリへ分離する。さらに、アカウント別のsession IDが同じファイル名を共有しないよう、`main`、`alias`、`unknown`のスコープへ分離する。
 
-- `candidates/`: session_idごとの最新候補記録。起動時に読み込むが、有効化状態や期限は保存しない
-- `rate_limits/`: rate limit到達を表す単発イベント。claim、complete、restore、起動時の鮮度付きcleanupの対象
+- `candidates/{main,alias,unknown}/`: アカウントスコープごとの最新候補記録。起動時に読み込むが、有効化状態や期限は保存しない
+- `rate_limits/{main,alias,unknown}/`: rate limit到達を表す単発イベント。claim、complete、restore、起動時の鮮度付きcleanupの対象
+- `unknown/`: アカウントラベルを持たない既存Hook記録の隔離先。表示はできても自動resume対象にはしない
+
+旧形式の用途別ディレクトリ直下にあるJSONは、移行期間の読み取り対象として扱う。ただし、旧形式にアカウントラベルがあっても共有namespaceのため自動resume対象にはしない。新規Hook書き込みは必ずアカウントスコープへ行う。
 
 候補発見記録を有効化状態のDBとして扱わない。
 
@@ -355,7 +369,8 @@ JSONは「rate limitに到達した」という単発イベントである。
   "session_name": "implement-dashboard",
   "project_name": "research-platform",
   "project_path": "<absolute-project-path>",
-  "updated_at": "2026-07-20T01:42:15+09:00"
+  "updated_at": "2026-07-20T01:42:15+09:00",
+  "account_name": "main"
 }
 ```
 
@@ -373,7 +388,13 @@ JSONは「rate limitに到達した」という単発イベントである。
 }
 ```
 
-`account_name`はHook設定で明示された場合だけ保存する任意項目であり、認証情報やメールアドレスではない。
+`account_name`はHook設定で明示された場合だけ保存する任意項目であり、認証情報やメールアドレスではない。ファイルの親スコープが`main`または`alias`の場合は、そのスコープが正規のアカウント識別子であり、JSON内の値と一致しなければ無効とする。
+同じsession IDが複数のアカウントのmetadataに存在する場合は、アカウントを
+一意に決定できないため表示・resume対象から除外する。明示された
+`account_name`がある場合は、そのアカウントのmetadataだけを参照する。
+metadataから補ったタイトルやrepository名は表示専用であり、欠落した
+`account_name`を補完しない。SelectionStoreのキーは
+`(session_id, account_name)`とし、一方のアカウントでの選択を他方へ引き継がない。
 
 ## 8.4 バリデーション
 
@@ -388,6 +409,7 @@ JSONは「rate limitに到達した」という単発イベントである。
 - ファイル名がsession_idから再計算したsession_keyと一致する
 - `updated_at`が現在UTCより未来でも5分以内である
 - `account_name`が存在する場合は設定済みのアカウント識別子である
+- 同じsession IDが複数ファイルまたは複数アカウントスコープに現れた場合は、候補・イベントとも曖昧として除外する
 
 rate limitイベント追加条件:
 
@@ -397,16 +419,17 @@ resume前追加条件:
 
 - `project_path.exists()`
 - `project_path.is_dir()`
+- 候補とイベントの`account_name`がともに存在し、同じ値である
 
 任意項目が不正でも、必須項目が有効なら無視してよい。
 
-現在UTCより5分を超えて未来の`updated_at`を持つ記録は不正イベントとして処理対象から除外し、自動削除せず無効イベント件数へ含める。
+現在UTCより5分を超えて未来の`updated_at`を持つ記録は不正イベントとして処理対象から除外する。現行Repositoryは無効レコードを一覧へ返さず、dry-runも無効イベント件数をUIへ表示しない。保持・件数表示を追加する場合は、Repositoryのcleanup方針、UI、テストを同時に更新する。
 
 ## 9. Hook設計
 
 ## 9.1 責務
 
-Claude Code Hookは、候補セッションの最新スナップショットとrate limit到達イベントをJSONへ変換する。セッション終了Hookは対応するrate limitイベントがない場合だけ候補記録を削除し、制限到達後のresume選択に必要な候補を保持する。
+Claude Code Hookは、候補セッションの最新スナップショットとrate limit到達イベントをJSONへ変換する。セッション終了Hookは、アカウントラベルがある場合に対応する候補記録だけを削除し、制限到達後のresume選択に必要な候補を保持する。ラベルがない場合は所有者を特定できないため、アカウント別候補を横断削除しない。
 
 AIphetamine本体はClaudeの出力を直接監視しない。
 
@@ -428,7 +451,7 @@ AIphetamine本体はClaudeの出力を直接監視しない。
 候補発見Hookの出力先:
 
 ```text
-~/.local/share/aiphetamine/candidates/<session_key>.json
+~/.local/share/aiphetamine/candidates/{main,alias,unknown}/<session_key>.json
 ```
 
 `session_key`はUTF-8のsession_idをSHA-256でハッシュ化した64桁の小文字16進文字列とする。同じsession_idが既に存在する場合は、最新候補情報として原子的に上書きする。
@@ -436,28 +459,28 @@ AIphetamine本体はClaudeの出力を直接監視しない。
 rate limit Hookの出力先:
 
 ```text
-~/.local/share/aiphetamine/rate_limits/<session_key>.json
+~/.local/share/aiphetamine/rate_limits/{main,alias,unknown}/<session_key>.json
 ```
 
-同じsession_idが既に存在する場合は上書きする。
+同じアカウントスコープの同じsession_idが既に存在する場合は、最新候補として原子的に上書きする。アカウントをまたぐ同一session_idは曖昧として除外する。
 
-セッション終了Hookは、対応する`candidates/<session_key>.json`を直接かつ冪等に削除する。ファイルが既に存在しない場合も成功扱いとする。アプリ停止中も同じ処理を行う。
+セッション終了Hookは、アカウントラベルがある場合だけ対応する`candidates/{main,alias,unknown}/<session_key>.json`を直接かつ冪等に削除する。アカウントラベルがない場合は所有者を特定できないため、`main`と`alias`の候補を削除せず、`unknown`または旧フラット配置だけを対象にする。ファイルが既に存在しない場合も成功扱いとする。アプリ停止中も同じ処理を行う。
 
 RepositoryはJSON内部のsession_idからsession_keyを再計算し、ファイル名と一致しない記録を不正として処理対象から除外する。
 
 ## 9.4 原子的書き込み
 
 ```text
-<session_key>.json.tmp.<pid>
+<scope>/<session_key>.json.tmp.<pid>
 → flush
 → file fsync
 → os.replace(<session_key>.json)
 → parent directory fsync
 ```
 
-一時ファイルは保存先と同じディレクトリへ`0600`で作成し、同一ファイルシステム上の`os.replace`を利用する。途中で失敗した一時ファイルは通常処理対象にせず、rate limit側は次回起動時cleanup対象とする。
+一時ファイルは保存先と同じディレクトリへ`0600`で作成し、同一ファイルシステム上の`os.replace`を利用する。途中で失敗した一時ファイルは通常処理対象にせず、rate limit側は24時間を超えたものだけを次回起動時cleanup対象とする。24時間以内の一時ファイルは書き込み中の可能性があるため保持する。
 
-候補削除時は対象ファイルをunlinkした後、`candidates/`ディレクトリを`fsync`する。ファイル不在は成功扱いとする。
+候補削除時は対象ファイルをunlinkした後、対象スコープディレクトリを`fsync`する。ファイル不在は成功扱いとする。
 
 ## 9.5 Hookエラー
 
@@ -472,7 +495,7 @@ Hook失敗はClaude Code本体を妨げない。
 
 ## 9.6 Hook設定の適用境界
 
-installスクリプトはAIphetamine用HookスクリプトとClaude Code向け設定断片を生成し、JSON構文と参照先を検証する。Claude Codeの既存設定ファイルは自動編集しない。
+`scripts/generate_hook_config.py`はAIphetamine用Hookスクリプトを参照するClaude Code向け設定断片を生成し、Claude Codeの既存設定ファイルは自動編集しない。
 
 ユーザーが生成内容と既存Hookとの競合を確認し、手動で設定へマージする。READMEに適用、検証、解除手順を記載する。
 
@@ -516,12 +539,12 @@ class CandidateRepository(Protocol):
 
 ```python
 class RateLimitEventRepository(Protocol):
-    def initialize(self) -> None: ...
+    def initialize(self, now: datetime) -> None: ...
     def list_events(self) -> list[RateLimitEvent]: ...
     def claim(self, event: RateLimitEvent) -> Path: ...
     def complete(self, processing_path: Path) -> None: ...
     def restore(self, processing_path: Path) -> Path: ...
-    def cleanup_on_startup(self) -> None: ...
+    def cleanup_on_startup(self, now: datetime, preserve_fresh: bool = True) -> None: ...
 ```
 
 ### 10.2.1 Claim
@@ -536,7 +559,7 @@ renameに失敗した場合、他処理がclaim済みとみなしスキップす
 
 ### 10.2.2 Complete
 
-プロセス生成成功時:
+resumeプロセスが終了コード0で完了した時:
 
 ```text
 abc.processing
@@ -545,7 +568,7 @@ abc.processing
 
 ### 10.2.3 Restore
 
-プロセス生成失敗時:
+起動失敗または非ゼロ終了時:
 
 ```text
 abc.processing
@@ -566,7 +589,7 @@ abc.processing
 - 12時間以内の有効な`*.json`は保持
 - 古い・不正な`*.json`削除
 - `*.processing`削除
-- `*.tmp.*`削除
+- 24時間を超えた`*.tmp.*`削除
 
 削除失敗はログに記録するが、可能な限り起動を継続する。
 
@@ -580,16 +603,16 @@ abc.processing
 
 ```python
 class InMemorySelectionStore:
-    _activations: dict[str, SessionActivation]
+    _activations: dict[tuple[str, str | None], SessionActivation]
 ```
 
 操作:
 
 ```python
-activate(session_id, now_utc)
-deactivate(session_id)
-is_selected(session_id)
-is_expired(session_id, now_utc)
+activate(session_id, account_name, now_utc)
+deactivate(session_id, account_name)
+is_selected(session_id, account_name)
+is_expired(session_id, account_name, now_utc)
 expire_due(now_utc)
 clear()
 ```
@@ -600,7 +623,7 @@ rate limitイベントが削除されてもSessionActivationは保持する。
 
 理由:
 
-- resume後、まだrate limit中なら同じsession_idのJSONが再生成される
+- resume後、まだrate limit中なら同じ`(session_id, account_name)`のJSONが再生成される
 - 再生成時にチェックONを維持する必要がある
 
 アプリ終了時に破棄する。巡回前とスリープ復帰時に、現在UTCで期限切れを判定し、resume判定より先に対象をOFFへ戻す。タイムゾーン変更では期限を再計算しない。システム時計が変更された場合は、変更後のUTC時刻で再評価する。
@@ -672,7 +695,7 @@ def run_poll_cycle() -> None:
     events = repository.list_events()
 
     for event in events:
-        if not selection_store.is_selected(event.session_id):
+        if not selection_store.is_selected(event.session_id, event.account_name):
             continue
 
         if processing_registry.contains(event.session_id):
@@ -713,9 +736,11 @@ def run_poll_cycle() -> None:
 
 MVPでは以下を必須とする。
 
-- stdin、stdout、stderrを`subprocess.DEVNULL`へ接続する
-- `start_new_session=True`でアプリ本体から独立させる
-- `Popen`後は同じ巡回ワーカーで`wait()`し、終了コードだけを回収する
+- stdin、stdout、stderrを`/dev/null`へ接続する
+- macOSでは`posix_spawn`のsetsid属性でアプリ本体から独立させる
+- macOSではdescriptor-relativeなcwd変更を使い、実行ファイル・project・accountのpathnameと検証済みdescriptorのdevice/inodeが一致しない場合は起動しない
+- その他の環境では`Popen(start_new_session=True)`を使い、同じ検証境界を適用する
+- 起動後は同じ巡回ワーカーでwaitし、終了コード0だけを成功として回収する
 - アプリ終了時にresume子プロセスを強制終了しない
 
 ## 13.2 子プロセス終了メタデータ
@@ -749,13 +774,13 @@ cwd=str(project_path)
 - 基本は現在の環境を継承
 - `ResumeRequest.account_name`が`alias`の場合は検証済みの第二設定ディレクトリを`CLAUDE_CONFIG_DIR`へ設定する
 - アカウント名が不明または候補とイベントで不一致の場合はresumeを起動しない
-- Claude実行にはinstallスクリプトが保存した検証済み絶対パスを使い、実行時PATH探索は行わない
+- Claude実行にはローカル設定から読み込んだ検証済み絶対パスを使い、実行時PATH探索は行わない
 
 ## 14.1 Claude実行ファイル探索
 
-installスクリプト実行時に`shutil.which("claude")`相当の探索でClaude実行ファイルを解決し、絶対パスをローカル設定へ保存する。既知パスのハードコードやOS cron、ログインシェル経由の探索は行わない。
+Claude実行ファイルの解決・設定ファイルへの保存を行うインストール処理は提供しない。利用者が用意した絶対パスを設定へ登録し、実行時は既知パスのハードコードやOS cron、ログインシェル経由の探索を行わない。
 
-アプリ起動時は保存済み絶対パスが存在し、通常ファイルで、実行可能であることを検証する。検証に失敗した場合はresumeを行わず、候補行へ`起動失敗`を表示し、サニタイズした分類をログへ記録する。Claudeのインストール先が変わった場合はinstallスクリプトを再実行して設定を再生成する。
+アプリ起動時は保存済み絶対パスが存在し、通常ファイルで、実行可能であることを検証する。検証に失敗した場合はresumeを行わず、候補行へ`起動失敗`を表示し、サニタイズした分類をログへ記録する。Claudeのインストール先が変わった場合は設定ファイルを利用者が更新する。
 
 ## 14.2 元プロセスとの関係
 
@@ -806,13 +831,13 @@ Quit AIphetamine
 ☐ implement-dashboard — research-platform
 ```
 
-状態がある場合:
+目標仕様では状態がある場合:
 
 ```text
 ☐ implement-dashboard — research-platform · 起動失敗
 ```
 
-標準`NSMenuItem`の一行表示へ固定し、カスタムViewは使用しない。重複時だけsession_id先頭8文字を追加する。状態は`起動失敗`、`パス不一致`、`有効期限切れ`のいずれかを末尾へ表示する。
+標準`NSMenuItem`の一行表示へ固定し、カスタムViewは使用しない。重複時だけsession_id先頭8文字を追加する。現行実装の行はタイトル、アカウント・プロジェクト識別、チェック状態を表示し、状態はpoll全体の集計メニューへ表示する。`起動失敗`、`パス不一致`、`有効期限切れ`の行内表示は未実装の目標仕様である。
 
 `session_name`と`project_name`はUnicode NFCへ正規化し、制御文字を除去し、連続空白を1つへ圧縮する。各フィールドを40 Unicode code pointまでとし、超過時は末尾を省略記号に置き換える。サニタイズ・切り詰め後の表示が重複する場合もsession_id先頭8文字で区別する。
 
@@ -820,7 +845,7 @@ Quit AIphetamine
 
 候補発見、rate limitイベント検出、resume判定は同じ2時間固定巡回で行う。FSEvents、常時監視、短周期ポーリングは使用しない。
 
-チェック状態の変更、期限切れ、起動失敗、パス不一致、巡回完了時は、メモリ上の最新状態からメニューを直ちに再構築する。ファイルシステム上の新規イベントは次回固定巡回まで反映しない。
+チェック状態の変更と巡回完了時は、メモリ上の最新状態からメニューを直ちに再構築する。ファイルシステム上の新規イベントは次回固定巡回まで反映しない。現行実装では期限切れ、起動失敗、パス不一致はpoll集計で分類し、行単位の状態としては再構築しない。
 
 ## 15.4 アイコン状態
 
@@ -832,7 +857,7 @@ WAITING
 WAITING条件:
 
 ```text
-選択済みsession_idに対応する有効JSONが1件以上存在
+選択済み`(session_id, account_name)`に対応する有効JSONが1件以上存在
 ```
 
 ## 16. LaunchAgentManager
@@ -844,13 +869,13 @@ WAITING条件:
 - 有効状態確認
 - 削除
 
-Launch at LoginをOFFにした場合はLaunchAgentを登録解除し、AIphetamine専用plistを削除する。ONにした場合は、保存済みのPython、アプリのエントリーポイント、設定パスの絶対パスからplistを一時ファイルへ生成し、原子的に置換して登録する。
+LaunchAgent managerは、所有者と非書込の祖先を持つ実在のPython実行ファイルと、symlinkでない通常ファイルのエントリーポイントだけを受け付け、plistを一時ファイルへ生成し、原子的に置換する。既存の`~/Library/LaunchAgents`ルートの権限は変更せず、登録・解除やON/OFFのUI操作は提供せず、利用者が手動で行う。
 
-OFF状態では専用plistが存在しないことを基本とする。登録解除済みだが削除に失敗した場合はOFFとして扱い、サニタイズしたエラー分類を表示・記録する。
+登録解除や専用plistの削除は手動の運用境界であり、アプリは生成済みplistの存在だけを確認する。
 
 ## 16.1 uninstall境界
 
-通常のuninstallはLaunchAgentを登録解除し、AIphetamine専用plistを削除する。ユーザーが手動でマージしたClaude Code Hook設定は編集せず、解除手順を表示する。
+通常の運用でLaunchAgentを登録解除し、AIphetamine専用plistを削除する場合は利用者が手動で行う。ユーザーが手動でマージしたClaude Code Hook設定は編集せず、解除手順を表示する。
 
 ローカル設定、`candidates/`、`rate_limits/`、`logs/`は通常uninstallでは保持する。明示的な`--purge-data`指定時だけ、データルートが期待する固定パス、実行ユーザー所有、非symlinkであることを検証してから削除する。検証に失敗した場合は削除せず停止する。
 
@@ -885,10 +910,10 @@ plist項目例:
 
 ## 17.1 アプリログ
 
-`TimedRotatingFileHandler`を利用する。
+`TimedRotatingFileHandler`を基底にしたdescriptor-relativeなsecure handlerを利用する。
 
 ```python
-handler = TimedRotatingFileHandler(
+handler = SecureTimedRotatingFileHandler(
     filename=LOGS_DIR / "aiphetamine.log",
     when="midnight",
     backupCount=7,
@@ -924,7 +949,7 @@ timestamp level component event correlation_id error_class
 
 ## 18. 起動シーケンス
 
-`config.json`が欠落、破損、または検証失敗した場合もAppKitメニューバーを縮退起動する。メニュー先頭に`設定エラー — installを再実行`を表示し、候補の有効化とresume処理を無効化する。Launch at LoginのOFF、Quit、サニタイズ済みログは利用可能とする。
+`config.json`が欠落、破損、または検証失敗した場合もAppKitメニューバーを縮退起動する。候補一覧と選択UIは表示されるが、`DisabledResumeExecutor`がresume起動を拒否し、結果は`launch_disabled`として復元される。Launch at LoginのOFF、Quit、サニタイズ済みログは利用可能とする。設定エラー専用のメニュー行は現行実装の契約に含めない。
 
 データルートを安全に作成・検証した直後、起動時cleanupより前に`instance.lock`を開き、`fcntl.flock(LOCK_EX | LOCK_NB)`を取得する。lockはプロセス終了まで保持する。取得できない二つ目のプロセスは、cleanup、設定変更、UI起動を行わず、サニタイズした理由だけを記録して終了する。lockファイル自体は残してよい。
 
@@ -938,10 +963,10 @@ Create data directories
 Acquire exclusive instance.lock
         │
         ▼
-Delete stale rate_limits/*.json/.processing/.tmp
+Delete stale rate_limits/{main,alias,unknown}/*.json/.processing and `.tmp.` artifacts older than 24 hours
         │
         ▼
-Load fresh candidates/*.json snapshots
+Load fresh candidates/{main,alias,unknown}/*.json snapshots
         │
         ▼
 Clear in-memory activations and expiry state
@@ -973,7 +998,7 @@ StopFailure(rate_limit) Hook
     │
     │ atomic write
     ▼
-<session_id>.json
+<account-scope>/<session_key>.json
     │
     ▼
 UI watcher detects JSON
@@ -985,7 +1010,7 @@ Menu shows unchecked session
 User checks session
     │
     ▼
-SelectionStore.add(session_id)
+SelectionStore.add((session_id, account_name))
 ```
 
 ## 20. Resumeシーケンス
@@ -1000,13 +1025,21 @@ ResumeService.poll()
 List valid events
     │
     ▼
-Filter selected session IDs
+Filter selected (session_id, account_name) pairs
     │
     ▼
 Rename .json → .processing
     │
     ▼
-Popen(["claude", "-p", "--resume", id, "Continue"])
+    posix_spawn(
+        verified_claude_path,
+        cwd=file_actions.addfchdir(verified_project_directory),
+        argv=["claude", "-p", "--resume", id, "Continue"],
+        stdin=DEVNULL,
+        stdout=DEVNULL,
+        stderr=DEVNULL,
+        start_new_session=True,
+    )
     │
     ├── launch failed
     │      ▼
@@ -1034,7 +1067,7 @@ StopFailure(rate_limit) fires again
 Same session_id JSON recreated
         │
         ▼
-SelectionStore still contains session_id
+SelectionStore still contains (session_id, account_name)
         │
         ▼
 UI shows checked session again
@@ -1070,9 +1103,9 @@ Hookの原子的書き込みで防止する。
 
 ## 22.4 同一session_idの複数ファイル
 
-ファイル名をsession_id固定にし、Hook側で上書きする。
-
-異常に複数存在する場合は、`updated_at`が新しいものを採用し、他をログする。
+アカウントスコープをまたいで同じsession_idが複数存在する場合は、Repositoryが
+任意のwinnerを選ばず、すべてresume対象外として除外する。異なるスコープへの
+選択状態の引き継ぎも行わない。
 
 ## 22.5 project_path削除
 
@@ -1217,4 +1250,5 @@ JSONは残し、ログへ記録する。
 
 - activeな`PRD.md`で、候補発見・終了イベント、12時間の有効期限、2時間巡回への統合、安全なログ制約が追加された。
 - 候補発見・終了イベント、12時間の有効期限、2時間巡回への統合、安全なログ制約を本architectureへ反映中である。
-- Phase 1のrepository、selection、boundary、resume eligibility基盤、runtime coreのatomic event操作・poll cycle・固定resume command契約、およびread-only dry-run app shellがactive workstreamで実装済みである。メニューバーUI、LaunchAgent、実Claude subprocess実行、production Hook適用、自然なrate limit再Hookは未実装・未検証である。
+- 現在のリポジトリでは、repository、selection、boundary、resume eligibility基盤、runtime coreのatomic event操作・poll cycle・固定resume command、Hook、メニューバーUI、LaunchAgent plist生成、およびread-only dry-run app shellが実装済みである。
+- Claude設定へのHookマージ、LaunchAgentの登録、PyObjCを含む実環境のメニューバー起動、自然なrate limit再Hook、実Claudeセッションのresume継続は手動操作または環境依存であり、このリポジトリでは未検証である。

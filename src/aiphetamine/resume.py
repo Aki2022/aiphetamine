@@ -44,21 +44,21 @@ def evaluate_resume(
     processing_session_ids: set[str] | None = None,
 ) -> ResumeDecision:
     processing = processing_session_ids or set()
-    if not selection_store.is_selected(event.session_id):
+    candidate = candidates.get(event.session_id)
+    if not selection_store.is_any_selected(event.session_id):
         return ResumeDecision("unselected")
-    if selection_store.is_expired(event.session_id, now_utc):
+    if candidate is None:
+        return ResumeDecision("candidate_missing")
+    if event.account_name is None or candidate.account_name is None:
+        return ResumeDecision("account_unknown")
+    if event.account_name != candidate.account_name:
+        return ResumeDecision("account_mismatch")
+    if not selection_store.is_selected(event.session_id, event.account_name):
+        return ResumeDecision("unselected")
+    if selection_store.is_expired(event.session_id, now_utc, event.account_name):
         return ResumeDecision("expired")
     if event.session_id in processing:
         return ResumeDecision("processing")
-    candidate = candidates.get(event.session_id)
-    if candidate is None:
-        return ResumeDecision("candidate_missing")
-    if (
-        event.account_name is not None
-        and candidate.account_name is not None
-        and event.account_name != candidate.account_name
-    ):
-        return ResumeDecision("account_mismatch")
     if now_utc.astimezone(UTC) - candidate.updated_at > timedelta(hours=24):
         return ResumeDecision("candidate_stale")
     if now_utc.astimezone(UTC) - event.updated_at > timedelta(hours=12):
@@ -66,7 +66,7 @@ def evaluate_resume(
     matches, resolved = _same_project_identity(candidate.project_path, event.project_path)
     if not matches or resolved is None:
         return ResumeDecision("path_mismatch")
-    activation = selection_store.get(event.session_id)
+    activation = selection_store.get(event.session_id, event.account_name)
     if activation is None:
         return ResumeDecision("unselected")
     try:
@@ -84,6 +84,8 @@ def evaluate_resume(
         ResumeRequest(
             session_id=event.session_id,
             project_path=resolved,
-            account_name=event.account_name or candidate.account_name,
+            account_name=event.account_name,
+            expected_project_device=activation.project_device,
+            expected_project_inode=activation.project_inode,
         ),
     )

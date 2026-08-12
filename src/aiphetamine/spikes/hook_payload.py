@@ -78,7 +78,10 @@ def _session_id_digest(payload: Mapping[str, Any]) -> Optional[str]:
     salt = os.environ.get("AIPHEMETINE_CAPTURE_SALT")
     if not present or not _valid_text(value) or not salt:
         return None
-    digest_input = (salt + "\x00" + value).encode("utf-8")
+    try:
+        digest_input = (salt + "\x00" + value).encode("utf-8")
+    except UnicodeError:
+        return None
     return hashlib.sha256(digest_input).hexdigest()[:12]
 
 

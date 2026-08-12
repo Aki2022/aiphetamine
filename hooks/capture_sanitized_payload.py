@@ -20,7 +20,7 @@ def capture_payload(stdin: TextIO, stdout: TextIO) -> int:
 
     try:
         payload = json.load(stdin)
-    except (json.JSONDecodeError, TypeError, ValueError):
+    except (json.JSONDecodeError, TypeError, ValueError, RecursionError):
         evidence = {
             "schema_version": 1,
             "accepted": False,

@@ -13,7 +13,7 @@ related_specs:
 
 ## What It Does
 
-The dry-run command inspects AIphetamine candidate and rate-limit event directories, calculates the next even-hour boundary, and reports aggregate eligibility statuses. It does not launch Claude, claim events, delete files, or persist selection state.
+The dry-run command inspects existing AIphetamine candidate and rate-limit event directories, calculates the next even-hour boundary, and reports aggregate eligibility statuses. It does not create data directories or logs, launch Claude, claim events, delete files, or persist selection state.
 
 ## How To Use
 
@@ -37,7 +37,9 @@ Keep this guide aligned with `scripts/run_dry_cycle.py` and `src/aiphetamine/app
 
 ## Known Limitations
 
-- This is not the installable or user-runnable MVP.
+- This command is a read-only inspection path, not the installable or user-runnable MVP.
+- It creates no runtime directories or logs.
+- It does not repair permissions on existing records; unsafe records are skipped.
 - It does not install Claude Code Hooks, run the macOS menu bar app, register LaunchAgent, or launch Claude.
 - Selection state is in memory only and is empty for a fresh command invocation.
 - Natural rate-limit Hook behavior and same-session event recreation remain unverified.

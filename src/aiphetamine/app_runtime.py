@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -9,12 +10,26 @@ from threading import Lock
 from typing import Any
 
 from .domain import CandidateSession
+from .filesystem_security import ensure_private_directory, open_trusted_directory
+from .instance_lock import InstanceLock
 from .repositories import CandidateRepository, RateLimitEventRepository
 from .resume_service import RuntimePollCycle
 from .runtime_logging import SanitizedLogger
 from .scheduling import next_boundary
 from .selection import InMemorySelectionStore
 from .session_metadata import SessionMetadataResolver
+
+
+def _project_directory_available(path: Path) -> bool:
+    descriptor = -1
+    try:
+        descriptor = open_trusted_directory(path)
+        return True
+    except (OSError, UnicodeError, ValueError):
+        return False
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
 
 
 @dataclass(frozen=True)
@@ -57,12 +72,73 @@ class DryRunReport:
         }
 
 
+def read_only_dry_run(data_root: Path, now: datetime) -> DryRunReport:
+    """Inspect existing state without creating locks, logs, or directories."""
+
+    candidates_root = data_root / "candidates"
+    rate_limits_root = data_root / "rate_limits"
+    candidate_repository = CandidateRepository(candidates_root, repair_permissions=False)
+    candidate_records = candidate_repository.list_candidates(now=now)
+    known_candidate_session_ids = {candidate.session_id for candidate in candidate_records}
+    candidates = [
+        candidate
+        for candidate in candidate_records
+        if _project_directory_available(candidate.project_path)
+    ]
+    event_repository = RateLimitEventRepository(rate_limits_root, repair_permissions=False)
+    events = event_repository.list_events(now=now)
+    ambiguous_session_ids = (
+        candidate_repository.ambiguous_session_ids
+        | event_repository.ambiguous_session_ids
+    )
+    for event in events:
+        if not _project_directory_available(event.project_path):
+            continue
+        if (
+            event.session_id in known_candidate_session_ids
+            or event.session_id in ambiguous_session_ids
+        ):
+            continue
+        candidates.append(
+            CandidateSession(
+                schema_version=1,
+                record_type="candidate",
+                session_id=event.session_id,
+                project_path=event.project_path,
+                updated_at=event.updated_at,
+                account_name=event.account_name,
+            )
+        )
+    candidates.sort(key=lambda candidate: candidate.session_id)
+    selection_store = InMemorySelectionStore()
+    cycle = RuntimePollCycle(
+        candidates_root,
+        rate_limits_root,
+        selection_store,
+        executor=None,
+        candidate_provider=lambda _now: tuple(candidates),
+        repair_permissions=False,
+    )
+    outcomes = cycle.preview(now)
+    status_counts: dict[str, int] = {}
+    for outcome in outcomes:
+        status_counts[outcome.status] = status_counts.get(outcome.status, 0) + 1
+    return DryRunReport(
+        candidate_count=len(candidates),
+        event_count=len(events),
+        next_boundary=next_boundary(now),
+        status_counts=status_counts,
+    )
+
+
 class ApplicationRuntime:
     def __init__(self, data_root: Path, *, log_salt: bytes | None = None, session_metadata=None):
         self.data_root = data_root
         self.candidates_root = data_root / "candidates"
         self.rate_limits_root = data_root / "rate_limits"
         self.logs_root = data_root / "logs"
+        ensure_private_directory(self.data_root)
+        self._instance_lock = InstanceLock(self.data_root)
         self.selection_store = InMemorySelectionStore()
         self._logger = SanitizedLogger(self.logs_root, salt=log_salt)
         self._session_metadata = session_metadata
@@ -75,9 +151,9 @@ class ApplicationRuntime:
             return self._last_poll_status
 
     def startup(self, now: datetime) -> StartupSnapshot:
-        self.data_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        ensure_private_directory(self.data_root)
         for directory in (self.candidates_root, self.rate_limits_root, self.logs_root):
-            directory.mkdir(mode=0o700, exist_ok=True)
+            ensure_private_directory(directory)
         event_repository = RateLimitEventRepository(self.rate_limits_root)
         cleaned = event_repository.cleanup_on_startup(now=now, preserve_fresh=True)
         candidates = CandidateRepository(self.candidates_root).list_candidates(now=now)
@@ -92,10 +168,27 @@ class ApplicationRuntime:
         return snapshot
 
     def candidates(self, now: datetime):
-        candidates = CandidateRepository(self.candidates_root).list_candidates(now=now)
-        known_session_ids = {candidate.session_id for candidate in candidates}
-        for event in RateLimitEventRepository(self.rate_limits_root).list_events(now=now):
-            if event.session_id in known_session_ids:
+        candidate_repository = CandidateRepository(self.candidates_root)
+        candidate_records = candidate_repository.list_candidates(now=now)
+        known_candidate_session_ids = {candidate.session_id for candidate in candidate_records}
+        candidates = [
+            candidate
+            for candidate in candidate_records
+            if _project_directory_available(candidate.project_path)
+        ]
+        event_repository = RateLimitEventRepository(self.rate_limits_root)
+        events = event_repository.list_events(now=now)
+        ambiguous_session_ids = (
+            candidate_repository.ambiguous_session_ids
+            | event_repository.ambiguous_session_ids
+        )
+        for event in events:
+            if not _project_directory_available(event.project_path):
+                continue
+            if (
+                event.session_id in known_candidate_session_ids
+                or event.session_id in ambiguous_session_ids
+            ):
                 continue
             candidates.append(
                 CandidateSession(
@@ -121,8 +214,8 @@ class ApplicationRuntime:
             raise LookupError("candidate not available")
         self.selection_store.activate(candidate, now)
 
-    def deactivate(self, session_id: str) -> None:
-        self.selection_store.deactivate(session_id)
+    def deactivate(self, session_id: str, account_name: str | None = None) -> None:
+        self.selection_store.deactivate(session_id, account_name)
 
     def run_poll(self, now: datetime, executor: object):
         self._logger.record(component="resume_service", event="poll_started")
@@ -148,24 +241,15 @@ class ApplicationRuntime:
 
     def close(self) -> None:
         self._logger.close()
+        self._instance_lock.close()
+
+    def __del__(self):
+        try:
+            lock = getattr(self, "_instance_lock", None)
+            if lock is not None:
+                lock.close()
+        except Exception:
+            pass
 
     def dry_run(self, now: datetime) -> DryRunReport:
-        cycle = RuntimePollCycle(
-            self.candidates_root,
-            self.rate_limits_root,
-            self.selection_store,
-            executor=None,
-            candidate_provider=self.candidates,
-        )
-        candidates = self.candidates(now)
-        events = RateLimitEventRepository(self.rate_limits_root).list_events(now=now)
-        outcomes = cycle.preview(now)
-        status_counts: dict[str, int] = {}
-        for outcome in outcomes:
-            status_counts[outcome.status] = status_counts.get(outcome.status, 0) + 1
-        return DryRunReport(
-            candidate_count=len(candidates),
-            event_count=len(events),
-            next_boundary=next_boundary(now),
-            status_counts=status_counts,
-        )
+        return read_only_dry_run(self.data_root, now)

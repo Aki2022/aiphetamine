@@ -52,6 +52,22 @@ class RuntimeLoggingTests(unittest.TestCase):
 
             logger.close()
 
+    def test_correlation_id_handles_surrogate_session_id(self):
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as temp_dir:
+            logger = SanitizedLogger(Path(temp_dir), salt=b"test-salt")
+            correlation_id = logger.correlation_id("bad\ud800")
+            self.assertRegex(correlation_id, r"^[0-9a-f]{12}$")
+            logger.close()
+
+    def test_logger_rejects_fifo_log_target(self):
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as temp_dir:
+            import os
+
+            log_root = Path(temp_dir)
+            os.mkfifo(log_root / "aiphetamine.log", 0o600)
+            with self.assertRaises(OSError):
+                SanitizedLogger(log_root, salt=b"test-salt")
+
     def test_runtime_runs_injected_poll_cycle_and_logs_only_safe_events(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -59,17 +75,20 @@ class RuntimeLoggingTests(unittest.TestCase):
             runtime = ApplicationRuntime(root, log_salt=b"test-salt")
             runtime.startup(now)
             session_id = "session-private-value"
+            (root / "candidates" / "main").mkdir(mode=0o700)
+            (root / "rate_limits" / "main").mkdir(mode=0o700)
             candidate = {
                 "schema_version": 1,
                 "record_type": "candidate",
                 "session_id": session_id,
                 "project_path": str(root),
                 "updated_at": "2026-07-21T11:59:00+00:00",
+                "account_name": "main",
             }
-            (root / "candidates" / f"{session_key(session_id)}.json").write_text(
+            (root / "candidates" / "main" / f"{session_key(session_id)}.json").write_text(
                 json.dumps(candidate), encoding="utf-8"
             )
-            (root / "rate_limits" / f"{session_key(session_id)}.json").write_text(
+            (root / "rate_limits" / "main" / f"{session_key(session_id)}.json").write_text(
                 json.dumps({**candidate, "record_type": "rate_limit", "reason": "rate_limit"}),
                 encoding="utf-8",
             )
